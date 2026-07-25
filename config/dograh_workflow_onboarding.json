@@ -1,0 +1,164 @@
+{
+  "nodes": [
+    {
+      "id": "start-1",
+      "type": "startCall",
+      "position": { "x": 0, "y": 0 },
+      "data": {
+        "name": "Welcome & Confirm",
+        "prompt": "You are an onboarding specialist for an online trading platform. The customer's name is available in {{initial_context.customer_name}}.\n\nGreet them by name warmly. Confirm their phone number and ask them to verify their full name.\n\nOnce confirmed, ask: 'How much would you like to deposit to open your trading account? You can start with as little as ₹1.'\n\nYou MUST extract a single integer value for the deposit amount in Indian Rupees. The minimum deposit is ₹1 and there is no fixed maximum, but confirm any amount the customer states.",
+        "allow_interrupt": true,
+        "wait_for_user_response": true,
+        "extraction_enabled": true,
+        "extraction_variables": [
+          {
+            "name": "confirmed_amount",
+            "type": "number",
+            "prompt": "The exact deposit amount the customer confirmed in Indian Rupees. Must be a number like 1, 100, 500, 1000, 2000."
+          },
+          {
+            "name": "customer_name_confirmed",
+            "type": "string",
+            "prompt": "The customer's confirmed full name."
+          }
+        ]
+      }
+    },
+    {
+      "id": "negotiate-1",
+      "type": "agentNode",
+      "position": { "x": 300, "y": 0 },
+      "data": {
+        "name": "Negotiate Amount",
+        "prompt": "The customer seems unsure about the deposit amount. Help them decide.\n\nTell them:\n- ₹1 gets them started with a demo account\n- ₹500 gets them started with basic access\n- ₹1,000 is our most popular option with full features\n- ₹5,000+ unlocks premium benefits and lower fees\n\nBe helpful but not pushy. The minimum deposit is just ₹1, so any amount works. Once they confirm an amount, acknowledge it clearly.\n\nIMPORTANT: You must extract the final confirmed amount as a number.",
+        "allow_interrupt": true,
+        "wait_for_user_response": true
+      }
+    },
+    {
+      "id": "confirm-1",
+      "type": "agentNode",
+      "position": { "x": 600, "y": 0 },
+      "data": {
+        "name": "Final Confirmation",
+        "prompt": "Great! Confirm the deposit amount one final time. Say: 'So I have you down for ₹{amount}. You'll receive a QR code on WhatsApp right after this call. Scan it with any UPI app to complete the payment. Once paid, your account will be created instantly. Sound good?'\n\nWait for their confirmation.",
+        "allow_interrupt": true,
+        "wait_for_user_response": true
+      }
+    },
+    {
+      "id": "end-1",
+      "type": "endCall",
+      "position": { "x": 900, "y": 0 },
+      "data": {
+        "name": "End Call",
+        "prompt": "Thank them for their time. Say: 'Thank you for choosing us! You'll receive the payment QR on WhatsApp within seconds. Have a great day!'"
+      }
+    },
+    {
+      "id": "webhook-1",
+      "type": "webhook",
+      "position": { "x": 900, "y": 200 },
+      "data": {
+        "name": "Notify Orchestrator",
+        "enabled": true,
+        "http_method": "POST",
+        "endpoint_url": "http://10.234.52.162:9000/api/webhooks/dograh",
+        "payload_template": {
+          "run_id": "{{workflow_run_id}}",
+          "workflow_run_id": "{{workflow_run_id}}",
+          "workflow_id": "{{workflow_id}}",
+          "workflow_name": "{{workflow_name}}",
+          "call_time": "{{call_time}}",
+          "initial_context": "{{initial_context}}",
+          "gathered_context": "{{gathered_context}}",
+          "cost_info": "{{cost_info}}",
+          "recording_url": "{{recording_url}}",
+          "transcript_url": "{{transcript_url}}"
+        }
+      }
+    },
+    {
+      "id": "qa-1",
+      "type": "qa",
+      "position": { "x": 900, "y": 400 },
+      "data": {
+        "name": "QA Analysis",
+        "qa_enabled": true,
+        "qa_system_prompt": "Evaluate if the agent successfully extracted a valid deposit amount and confirmed it with the customer. Check for: proper greeting, clear amount confirmation, correct UPI instructions.",
+        "qa_min_call_duration": 15,
+        "qa_sample_rate": 100
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-1",
+      "source": "start-1",
+      "target": "negotiate-1",
+      "data": {
+        "label": "Needs guidance",
+        "condition": "The customer is unsure about the deposit amount or asks for recommendations",
+        "transition_speech": "Let me help you decide."
+      }
+    },
+    {
+      "id": "edge-2",
+      "source": "start-1",
+      "target": "confirm-1",
+      "data": {
+        "label": "Amount stated",
+        "condition": "The customer has stated a specific deposit amount confidently",
+        "transition_speech": "Perfect!"
+      }
+    },
+    {
+      "id": "edge-3",
+      "source": "negotiate-1",
+      "target": "confirm-1",
+      "data": {
+        "label": "Customer decides",
+        "condition": "The customer has decided on an amount after negotiation",
+        "transition_speech": "Excellent choice!"
+      }
+    },
+    {
+      "id": "edge-4",
+      "source": "confirm-1",
+      "target": "end-1",
+      "data": {
+        "label": "Customer confirms",
+        "condition": "The customer has confirmed the deposit amount and is ready to proceed",
+        "transition_speech": "Wonderful! Let me set everything up for you."
+      }
+    },
+    {
+      "id": "edge-5",
+      "source": "confirm-1",
+      "target": "negotiate-1",
+      "data": {
+        "label": "Change amount",
+        "condition": "The customer wants to change the deposit amount",
+        "transition_speech": "No problem, let's find the right amount for you."
+      }
+    },
+    {
+      "id": "edge-6",
+      "source": "end-1",
+      "target": "webhook-1",
+      "data": {
+        "label": "After call ends",
+        "condition": "Call has ended"
+      }
+    },
+    {
+      "id": "edge-7",
+      "source": "webhook-1",
+      "target": "qa-1",
+      "data": {
+        "label": "After webhook",
+        "condition": "Webhook sent"
+      }
+    }
+  ]
+}

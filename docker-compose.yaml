@@ -1,0 +1,152 @@
+version: "3.9"
+
+services:
+  # ═══════════════════════════════════════════════════════════════════
+  # Lead Pipeline Orchestrator (this project)
+  # ═══════════════════════════════════════════════════════════════════
+  orchestrator:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    container_name: lp-orchestrator
+    ports:
+      - "9000:9000"
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      dograh:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - pipeline
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PostgreSQL
+  # ═══════════════════════════════════════════════════════════════════
+  postgres:
+    image: postgres:16-alpine
+    container_name: lp-postgres
+    environment:
+      POSTGRES_USER: pipeline
+      POSTGRES_PASSWORD: pipeline
+      POSTGRES_DB: leadpipeline
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pipeline -d leadpipeline"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - pipeline
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Redis (for follow-up timers, session locking, rate limiting)
+  # ═══════════════════════════════════════════════════════════════════
+  redis:
+    image: redis:7-alpine
+    container_name: lp-redis
+    command: redis-server --requirepass pipeline
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "pipeline", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - pipeline
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Dograh AI (self-hosted voice agent platform)
+  # This uses the official Dograh docker-compose.yaml with local profile.
+  # Run `./setup_dograh.sh` first to generate the config.
+  # ═══════════════════════════════════════════════════════════════════
+  dograh:
+    image: ghcr.io/dograh-hq/dograh-api:latest
+    container_name: lp-dograh-api
+    env_file: .env.dograh
+    ports:
+      - "3010:3010"    # Dograh UI
+      - "8000:8000"    # Dograh API
+    depends_on:
+      - dograh-redis
+      - dograh-postgres
+      - dograh-minio
+    restart: unless-stopped
+    networks:
+      - pipeline
+
+  dograh-redis:
+    image: redis:7-alpine
+    container_name: lp-dograh-redis
+    command: redis-server --requirepass dograh_redis
+    volumes:
+      - dograh_redisdata:/data
+    restart: unless-stopped
+    networks:
+      - pipeline
+
+  dograh-postgres:
+    image: postgres:16-alpine
+    container_name: lp-dograh-postgres
+    environment:
+      POSTGRES_USER: dograh
+      POSTGRES_PASSWORD: dograh_pg
+      POSTGRES_DB: dograh
+    volumes:
+      - dograh_pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - pipeline
+
+  dograh-minio:
+    image: minio/minio:latest
+    container_name: lp-dograh-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - dograh_miniodata:/data
+    ports:
+      - "9001:9001"
+    restart: unless-stopped
+    networks:
+      - pipeline
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Dograh UI
+  # ═══════════════════════════════════════════════════════════════════
+  dograh-ui:
+    image: ghcr.io/dograh-hq/dograh-ui:latest
+    container_name: lp-dograh-ui
+    environment:
+      NEXT_PUBLIC_API_URL: http://dograh:8000
+    ports:
+      - "3010:3010"
+    depends_on:
+      - dograh
+    restart: unless-stopped
+    networks:
+      - pipeline
+
+volumes:
+  pgdata:
+  redisdata:
+  dograh_pgdata:
+  dograh_redisdata:
+  dograh_miniodata:
+
+networks:
+  pipeline:
+    driver: bridge
