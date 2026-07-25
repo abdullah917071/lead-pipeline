@@ -6,7 +6,7 @@ Complete autonomous lead-to-account conversion pipeline. This document contains 
 
 ## Overview
 
-Flow: Meta Ad → WhatsApp Opt-in → Dograh AI Voice Call → Razorpay/UPI Payment → Instant Account Provisioning
+Flow: Meta Ad → WhatsApp Opt-in → Dograh AI Voice Call → Razorpay Payment → Instant Account Provisioning
 
 Current state: Fully functional on Mac Mini at home. This guide lets you clone onto any VPS with Docker.
 
@@ -18,12 +18,12 @@ Current state: Fully functional on Mac Mini at home. This guide lets you clone o
 [ Webhook / FB Ads / API Lead Drop ]
                  |
                  v
-+---------------------------------------------+
-|      ORCHESTRATOR (FastAPI State Machine)   |<-- [ Rotation DB: Today's Active UPI ]
-+----+---------+---------+---------+----------+
+|+---------------------------------------------+
+||      ORCHESTRATOR (FastAPI State Machine)   |
+|+----+---------+---------+---------+----------+
      |         |         |         |
      v         v         v         v
-[ WhatsApp ] [ Dograh  ] [ UPI QR  ] [ Platform ]
+[ WhatsApp ] [ Dograh  ] [ Razorpay] [ Platform ]
 [  Cloud   ] [ Voice AI] [ Payment ] [ Provision]
 ```
 
@@ -125,25 +125,13 @@ WA_BUSINESS_ACCOUNT_ID=2202368716902450
 WA_ACCESS_TOKEN=EAAHuFJSJqDABSI3I4O11j2G5J5GqPjcr6qTRFTHYIw4lFkjtB9gpTALPc9xQQZAnFjgS2BGYdPgFrvkfIMTkeTvmBTKa13ZBcEbDtJWOAoONZCub0MgL6ZCRQxQGwDd7p3mAFLtDMMdBFafOSE3wh7ROTy1WPAXumhxU82UtxItiysC2G1YY6ajYYffSUisriAZDZD
 WA_WEBHOOK_VERIFY_TOKEN=suppremo_wa_verify_2026
 
-# UPI Payment
-UPI_MERCHANT_NAME=Sai Bhai
-PAYMENT_SESSION_EXPIRY_MINUTES=15
-
-# Platform API (account provisioning backend)
-PLATFORM_API_URL=http://localhost:8000
-PLATFORM_API_KEY=*** (replace with actual platform API key)
-PLATFORM_APP_DOWNLOAD_URL=https://suppremo.in/download
-QR_SERVICE=local
-
-# Telnyx (telephony for Dograh voice calls)
-TELNYX_API_KEY=KFY019...WHrW  (replace with full key from Dograh Telnyx settings)
-TELNYX_PHONE_NUMBER=+1682****4752  (replace with actual Telnyx number)
-
-# Razorpay (dynamic QR + payment webhook)
+# Razorpay
 RAZORPAY_KEY_ID=rzp_live_TFinDozUMuqMCp
 RAZORPAY_KEY_SECRET=MDMbgqTLdsvgzW7cgK66g8GI
 RAZORPAY_WEBHOOK_SECRET=suppremo_razorpay_webhook_2026
 RAZORPAY_API_URL=https://api.razorpay.com/v1
+UPI_MERCHANT_NAME=Sai Bhai
+PAYMENT_SESSION_EXPIRY_MINUTES=15
 
 # Amount Limits
 MIN_AMOUNT_INR=1
@@ -207,7 +195,7 @@ sleep 30  # Give Dograh time to initialize DB schema
 # Start orchestrator
 docker compose up -d orchestrator
 
-# Seed initial merchant UPI accounts
+# Seed database
 docker compose exec orchestrator python -m scripts.seed_db
 ```
 
@@ -267,9 +255,9 @@ The endpoint verifies `X-Razorpay-Signature` header using HMAC SHA256 before pro
 | 5 | `call_completed` | Voice call completed successfully |
 | 6 | `call_failed` | Call failed (voicemail, no answer) |
 | 7 | `amount_confirmed` | Deposit amount extracted from call |
-| 8 | `qr_generated` | Razorpay/UPI QR code generated |
+|| 8 | `qr_generated` | Razorpay QR code generated |
 | 9 | `awaiting_payment` | QR sent, waiting for payment |
-| 10 | `payment_received` | Razorpay webhook or SMS received |
+| 10 | `payment_received` | Razorpay webhook received |
 | 11 | `payment_verified` | Payment matched to session |
 | 12 | `account_created` | Platform account provisioned |
 | 13 | `credentials_delivered` | Login credentials sent via WhatsApp |
@@ -290,10 +278,7 @@ The endpoint verifies `X-Razorpay-Signature` header using HMAC SHA256 before pro
 | GET | `/api/webhooks/whatsapp` | WhatsApp webhook verification |
 | POST | `/api/webhooks/dograh` | Dograh post-call webhook |
 | POST | `/api/webhooks/payment/razorpay` | Razorpay payment webhook |
-| POST | `/api/internal/bank-sms-listener` | Android SMS reconciler |
 | POST | `/api/internal/payment-success` | Manual payment confirmation |
-| GET | `/api/upi/active` | Current active UPI account |
-| POST | `/api/upi/rotate` | Manual UPI rotation |
 | GET | `/api/dashboard` | Pipeline stats |
 | GET | `/api/leads` | List leads (optional ?status= filter) |
 | GET | `/api/leads/{id}` | Full lead detail with sessions & calls |
@@ -332,72 +317,16 @@ Response:
 
 ## 12. Background Tasks (Scheduler)
 
-The scheduler runs 3 tasks automatically:
+The scheduler runs 2 tasks automatically:
 
 | Task | Interval | What it does |
 |------|----------|-------------|
 | `expire_sessions_task` | Every 60s | Expire old payment sessions, log them |
 | `followup_task` | Every 60min | Send 12h follow-up WhatsApp, mark cold at 24h |
-| `daily_upi_rotation` | Every 60min (triggers at 18:30 UTC = 00:00 IST) | Rotate active UPI merchant account |
 
 ---
 
-## 13. UPI Rotation System
-
-- Multiple merchant UPI accounts stored in `merchant_accounts` table
-- Active account tracked in `active_upi_config` table
-- Rotates daily at midnight IST (18:30 UTC)
-- Each payment session records its `upi_id` and `bank_id` — if the active bank changes mid-session, payment reconciliation still resolves correctly
-- Manual override: `POST /api/upi/rotate`
-- Volume tracking: each account has `daily_cap_inr` and `current_volume_inr`
-- Rotation log: `upi_rotation_log` table tracks every change
-
-**Seed command** (add merchant accounts):
-```bash
-docker compose exec orchestrator python -c "
-from app.models.database import MerchantAccount
-from app.db_session import SessionLocal
-import asyncio
-
-async def seed():
-    async with SessionLocal() as db:
-        accounts = [
-            MerchantAccount(id='icici_01', upi_id='merchant1@icici', display_name='ICICI Bank - Main', daily_cap_inr=50000),
-            MerchantAccount(id='hdfc_01', upi_id='merchant2@hdfc', display_name='HDFC Bank', daily_cap_inr=75000),
-            MerchantAccount(id='sbi_01', upi_id='merchant3@sbi', display_name='SBI', daily_cap_inr=100000),
-        ]
-        for a in accounts:
-            db.add(a)
-        await db.commit()
-        print('Merchant accounts seeded')
-
-asyncio.run(seed())
-"
-```
-
----
-
-## 14. SMS Bank Reconciliation (Alternative Payment Confirm)
-
-For non-Razorpay payment methods, set up an Android device with bank SIM cards:
-
-1. Install MacroDroid/Tasker on Android
-2. Trigger: Incoming SMS containing "Credited" + "UPI Ref"
-3. Extract: Amount, UTR number, Timestamp
-4. POST to: `https://your-domain.com/api/internal/bank-sms-listener`
-
-Payload format:
-```json
-{
-  "amount": 500.00,
-  "utr": "123456789012",
-  "sender": "paytm"
-}
-```
-
----
-
-## 15. Service Architecture (Files)
+## 13. Service Architecture (Files)
 
 ### `/opt/lead-pipeline/app/`
 
@@ -416,16 +345,16 @@ Payload format:
 | `lead_service.py` | 106 | Lead CRUD, phone normalization, status advancement |
 | `whatsapp_service.py` | 191 | 12 WhatsApp API methods (template, text, image, interactive, QR, credentials) |
 | `dograh_service.py` | 154 | Trigger outbound calls, process call webhooks, record failures |
-| `upi_service.py` | 242 | QR generation (Razorpay + local), payment matching, daily rotation |
-| `razorpay_service.py` | 170 | Dynamic QR creation, webhook signature verification, QR management |
+| `upi_service.py` | 242 | QR generation via Razorpay, payment matching |
+| `razorpay_service.py` | 170 | Dynamic QR creation, webhook signature verification |
 | `provisioning_service.py` | 80 | Generate user accounts, send credentials via WhatsApp |
 
 ### Other
 
 | File | Purpose |
 |------|---------|
-| `app/models/database.py` | 9 SQLAlchemy models: Lead, PaymentSession, CallLog, WAMessage, MerchantAccount, ActiveUPIConfig, UPIRotationLog, ProvisionedAccount, PipelineSetting |
-| `app/tasks/scheduler.py` | 3 background tasks (session expiry, follow-ups, UPI rotation) |
+| `app/models/database.py` | 9 SQLAlchemy models: Lead, PaymentSession, CallLog, WAMessage, ProvisionedAccount, PipelineSetting |
+| `app/tasks/scheduler.py` | 2 background tasks (session expiry, follow-ups) |
 | `app/routers/admin.py` | Admin dashboard routes |
 | `scripts/setup.sh` | One-shot setup script |
 | `scripts/seed_db.py` | Seed initial data |
@@ -436,7 +365,7 @@ Payload format:
 
 ---
 
-## 16. Monitoring & Logs
+## 14. Monitoring & Logs
 
 ```bash
 # View orchestrator logs
@@ -478,20 +407,13 @@ curl https://your-domain.com/api/leads
   "cold": 2,
   "rejected": 1,
   "total_payment_value": 12500.0,
-  "active_upi": "merchant1@icici",
-  "active_bank": "ICICI Bank - Main",
-  "service_health": {
-    "dograh": {"status": "healthy"},
-    "whatsapp": {"status": "healthy"},
-    "platform_api": {"status": "healthy"}
-  },
   "razorpay_configured": true
 }
 ```
 
 ---
 
-## 17. Quick Troubleshooting
+## 15. Quick Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
@@ -505,14 +427,12 @@ curl https://your-domain.com/api/leads
 
 ---
 
-## 18. Security Notes
+## 16. Security Notes
 
-- This repo is **private** — keep it that way (contains live API keys)
-- Rotate WhatsApp access token every 60 days via Meta Dashboard
-- Rotate Razorpay webhook secret periodically
+- This repo contains live API keys — keep access restricted
 - Use nginx IP whitelisting if possible for internal webhooks
 - Consider changing `PLATFORM_API_KEY` to a dedicated key with minimal permissions
-- The Dograh `trigger_path` (`eb155119-43b7-4410-a94b-b9b331455fbb`) is effectively a public endpoint — Dograh authenticates via `X-API-Key` header
+- The Dograh `trigger_path` is effectively a public endpoint — Dograh authenticates via `X-API-Key` header
 
 ---
 
