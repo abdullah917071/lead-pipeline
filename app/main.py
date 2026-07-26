@@ -92,7 +92,7 @@ async def ingest_lead(data: IncomingLead, db: AsyncSession = Depends(get_db)):
 # Step 2: WhatsApp webhook (incoming messages + button clicks)
 # ═══════════════════════════════════════════════════════════════════
 
-@app.get("/api/webhooks/whatsapp")
+@app.post("/api/webhooks/whatsapp")
 async def whatsapp_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     """Handle incoming WhatsApp messages:
     - 'Interested' button click -> send call notification + trigger voice call
@@ -134,16 +134,24 @@ async def whatsapp_webhook(request: Request, db: AsyncSession = Depends(get_db))
         orchestrator = PipelineOrchestrator(db)
         lead = await orchestrator.leads.get_by_phone(phone)
         if not lead:
-            logger.info(f"No lead found for phone {phone}")
-            return {"status": "ok", "info": "no lead"}
+            # First contact from this number — send opt-in template, wait for Interested tap
+            from app.schemas import IncomingLead
+            data = IncomingLead(phone=phone, name="", source="whatsapp_inbound")
+            lead = await orchestrator.handle_new_lead(data)
+            logger.info(f"Auto-ingested new lead from inbound WA message: {phone}")
+            # Do NOT process the message — wait for Interested button click
+            return {"status": "ok", "lead_id": str(lead.id)}
 
         # Route based on lead status
-        if lead.status == LeadStatus.AMOUNT_CONFIRMED:
+        if msg_type == "interactive":
+            # Button click — always treat as interested for opt-in template
+            lead = await orchestrator.handle_wa_reply(phone, "interested")
+        elif lead.status == LeadStatus.AMOUNT_CONFIRMED:
             # User is replying with an amount after call
             lead = await orchestrator.handle_wa_amount_reply(phone, text)
-        elif msg_type == "interactive":
-            # Button click (only button on the opt-in template is "Interested")
-            lead = await orchestrator.handle_wa_reply(phone, "interested")
+        elif lead.status == LeadStatus.WA_SENT or lead.status == LeadStatus.PENDING_WA_OPTIN:
+            # Free text while waiting for opt-in — classify intent (don't hardcode 'interested')
+            lead = await orchestrator.handle_wa_reply(phone, text)
         else:
             # Normal reply / free text
             lead = await orchestrator.handle_wa_reply(phone, text)

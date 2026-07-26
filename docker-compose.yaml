@@ -27,7 +27,7 @@ services:
   # PostgreSQL
   # ═══════════════════════════════════════════════════════════════════
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: lp-postgres
     environment:
       POSTGRES_USER: pipeline
@@ -97,7 +97,7 @@ services:
       - pipeline
 
   dograh-postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: lp-dograh-postgres
     environment:
       POSTGRES_USER: dograh
@@ -133,7 +133,7 @@ services:
     environment:
       NEXT_PUBLIC_API_URL: http://dograh:8000
     ports:
-      - "3010:3010"
+      - "3011:3010"
     depends_on:
       - dograh
     restart: unless-stopped

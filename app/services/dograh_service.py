@@ -30,8 +30,8 @@ class DograhService:
         self.db = db
         self.base_url = settings.DOGRAH_API_URL
         self.api_key = settings.DOGRAH_API_KEY
-        self.trigger_path = getattr(settings, "DOGRAH_TRIGGER_PATH", "suppremo-onboarding")
-        self.telephony_config_id = getattr(settings, "DOGRAH_TELEPHONY_CONFIG_ID", 1)
+        self.trigger_path = settings.DOGRAH_TRIGGER_PATH
+        self.telephony_config_id = settings.DOGRAH_TELEPHONY_CONFIG_ID
 
     async def trigger_outbound_call(self, lead_id: UUID, phone: str, name: str = "",
                                      custom_context: Optional[dict] = None) -> dict:
@@ -45,11 +45,15 @@ class DograhService:
             initial_context.update(custom_context)
 
         # Dograh requires E.164 format with leading '+' in 'phone_number'.
-        # IMPORTANT: Do NOT send a 'to' field — Dograh's Telnyx telephony config (id 3)
-        # rejects any 'to' value with a 422 "Phone number must be in +E164 format"
-        # error, even when the value is valid +E164. Omitting 'to' works (verified:
-        # returns {"status":"initiated"}). Only 'phone_number' + 'telephony_configuration_id' are needed.
-        phone_e164 = phone if phone.startswith("+") else f"+{phone}"
+        # Normalize: if phone doesn't start with +, assume India (+91) for 10-digit numbers.
+        if phone.startswith("+"):
+            phone_e164 = phone
+        elif len(phone) == 10:
+            phone_e164 = f"+91{phone}"
+        elif phone.startswith("91") and len(phone) == 12:
+            phone_e164 = f"+{phone}"
+        else:
+            phone_e164 = f"+{phone}"
         payload = {
             "phone_number": phone_e164,
             "initial_context": initial_context,
