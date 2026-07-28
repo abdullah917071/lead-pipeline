@@ -245,10 +245,20 @@ class PipelineOrchestrator:
     # ─── Step 4: Generate Razorpay dynamic QR and send on WhatsApp ─
 
     async def _generate_and_send_qr(self, lead: Lead, amount: float) -> Lead:
-        """Create Razorpay dynamic QR and send QR image to user on WhatsApp."""
+        """Create Razorpay dynamic QR and send QR image to user on WhatsApp.
+
+        Only advances lead to AWAITING_PAYMENT after QR is successfully queued
+        for WhatsApp delivery. If QR creation or sending fails, lead stays at
+        AMOUNT_CONFIRMED so the operation can be retried.
+        """
         session = await self.payments.create_payment_session(lead.id, amount)
+        try:
+            await self.wa.send_qr_payment(lead.phone, amount, session.qr_image_url)
+        except Exception as e:
+            logger.error(f"QR created but WhatsApp send FAILED for {lead.phone}: {e}")
+            # Don't advance — lead stays at AMOUNT_CONFIRMED for retry
+            raise
         lead = await self.leads.advance(lead.id, LeadStatus.AWAITING_PAYMENT)
-        await self.wa.send_qr_payment(lead.phone, amount, session.qr_image_url)
         logger.info(f"QR sent to {lead.phone}: Rs {amount}, gateway={session.gateway}")
         return lead
 
