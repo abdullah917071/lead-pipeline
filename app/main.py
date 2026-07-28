@@ -128,13 +128,15 @@ async def whatsapp_webhook(request: Request, db: AsyncSession = Depends(get_db))
             interactive = msg.get("interactive", {})
             interactive_type = interactive.get("type", "")
             if interactive_type == "button_reply":
-                text = interactive["button_reply"]["id"]
+                br = interactive.get("button_reply", {})
+                # Meta template buttons often have empty id — fall back to title
+                text = br.get("id", "") or br.get("title", "")
             elif interactive_type == "list_reply":
-                text = interactive["list_reply"]["id"]
+                text = interactive.get("list_reply", {}).get("id", "")
             else:
                 text = ""
         elif msg_type == "text":
-            text = msg["text"]["body"]
+            text = msg.get("text", {}).get("body", "")
         else:
             text = ""
 
