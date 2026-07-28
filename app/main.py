@@ -25,7 +25,6 @@ from app.models.database import Base, Lead, LeadStatus, MerchantAccount, ActiveU
 from app.schemas import (IncomingLead, DograhWebhookPayload, LeadResponse,
                           PaymentSuccessRequest, DashboardStats, MidCallAmountConfirmed)
 from app.services.orchestrator import PipelineOrchestrator
-from app.services.upi_service import UPIPaymentService
 from app.services.razorpay_service import RazorpayService
 from app.routers.admin import router as admin_router
 from app.tasks.scheduler import start_scheduler
@@ -306,26 +305,15 @@ async def internal_payment_success(data: PaymentSuccessRequest, db: AsyncSession
 # UPI / Payment management endpoints
 # ═══════════════════════════════════════════════════════════════════
 
-@app.get("/api/upi/active")
-async def get_active_upi(db: AsyncSession = Depends(get_db)):
-    """Get current active UPI account."""
-    upi_svc = UPIPaymentService(db)
-    acct = await upi_svc.get_active_upi()
-    if acct:
-        return {
-            "account_id": acct.id, "upi_id": acct.upi_id,
-            "display_name": acct.display_name,
-            "daily_cap": acct.daily_cap_inr, "current_volume": acct.current_volume_inr,
-            "is_active": acct.is_active
-        }
-    return {"error": "no_active_upi"}
+# ─── UPI endpoints (deprecated — Razorpay-only) ─────────────────
 
+@app.get("/api/upi/active")
+async def get_active_upi():
+    return {"error": "deprecated", "message": "Razorpay QR only — no UPI accounts"}
 
 @app.post("/api/upi/rotate")
-async def manual_upi_rotate(db: AsyncSession = Depends(get_db)):
-    """Manually rotate UPI account."""
-    upi_svc = UPIPaymentService(db)
-    return await upi_svc.manual_rotate()
+async def manual_upi_rotate():
+    return {"error": "deprecated", "message": "Razorpay QR only — no UPI rotation"}
 
 
 # ═══════════════════════════════════════════════════════════════════

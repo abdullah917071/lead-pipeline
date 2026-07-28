@@ -21,7 +21,7 @@ from app.schemas import IncomingLead, DograhWebhookPayload, MidCallAmountConfirm
 from app.services.lead_service import LeadService
 from app.services.whatsapp_service import WhatsAppService
 from app.services.dograh_service import DograhService
-from app.services.upi_service import UPIPaymentService
+from app.services.upi_service import PaymentService
 from app.services.provisioning_service import ProvisioningService
 from app.config import get_settings
 
@@ -35,7 +35,7 @@ class PipelineOrchestrator:
         self.leads = LeadService(db)
         self.wa = WhatsAppService()
         self.dograh = DograhService(db)
-        self.upi = UPIPaymentService(db)
+        self.payments = PaymentService(db)
         self.prov = ProvisioningService(db)
 
     # ─── Step 1: New lead from Meta ad ─────────────────────────────
@@ -134,6 +134,17 @@ class PipelineOrchestrator:
         If the QR was already generated mid-call (via handle_midcall_amount_confirmed),
         skip duplicate QR generation but still advance the lead status.
         """
+        # Check for existing payment sessions BEFORE processing the webhook
+        # (process_call_webhook changes the lead status, which would break dedup)
+        lead = await self.dograh._get_lead_from_initial_context(payload.initial_context)
+        if lead:
+            existing_qr = await self._has_unpaid_qr(lead)
+            if existing_qr:
+                logger.info(f"Lead {lead.id} already has active QR — skipping post-call QR generation")
+                # Still process the webhook to update call logs
+                lead = await self.dograh.process_call_webhook(payload)
+                return lead
+
         lead = await self.dograh.process_call_webhook(payload)
         if not lead:
             return None
@@ -144,6 +155,13 @@ class PipelineOrchestrator:
             return lead
 
         gathered = payload.gathered_context or {}
+        # Handle stringified JSON from Dograh's template engine
+        if isinstance(gathered, str):
+            import json
+            try:
+                gathered = json.loads(gathered)
+            except (json.JSONDecodeError, TypeError):
+                gathered = {}
         amount = gathered.get("confirmed_amount")
 
         # Validate amount against config (min Rs 5)
@@ -228,7 +246,7 @@ class PipelineOrchestrator:
 
     async def _generate_and_send_qr(self, lead: Lead, amount: float) -> Lead:
         """Create Razorpay dynamic QR and send QR image to user on WhatsApp."""
-        session = await self.upi.create_payment_session(lead.id, amount)
+        session = await self.payments.create_payment_session(lead.id, amount)
         lead = await self.leads.advance(lead.id, LeadStatus.AWAITING_PAYMENT)
         await self.wa.send_qr_payment(lead.phone, amount, session.qr_image_url)
         logger.info(f"QR sent to {lead.phone}: Rs {amount}, gateway={session.gateway}")
@@ -241,9 +259,9 @@ class PipelineOrchestrator:
         """Payment confirmed via Razorpay webhook -> instantly provision and send credentials."""
         # Try ref_id matching first (most reliable)
         if ref_id:
-            session = await self.upi.match_by_ref_id(ref_id, utr, amount)
+            session = await self.payments.match_by_ref_id(ref_id, utr, amount)
         else:
-            session = await self.upi.match_incoming_payment(amount, utr, gateway=gateway)
+            session = await self.payments.match_incoming_payment(amount, utr, gateway=gateway)
 
         if not session:
             logger.error(f"Payment match failed: ref={ref_id}, utr={utr}, amount={amount}")
@@ -272,11 +290,11 @@ class PipelineOrchestrator:
     # ─── Background tasks ──────────────────────────────────────────
 
     async def handle_expired_sessions(self):
-        expired = await self.upi.mark_expired_sessions()
+        expired = await self.payments.mark_expired_sessions()
         for session in expired:
             lead = await self.leads._get(session.lead_id)
             if lead and lead.status == LeadStatus.AWAITING_PAYMENT:
-                new_session = await self.upi.create_payment_session(lead.id, session.amount_inr)
+                new_session = await self.payments.create_payment_session(lead.id, session.amount_inr)
                 await self.wa.send_text(lead.phone, f"Previous QR expired. Fresh QR for Rs {int(session.amount_inr)}:")
                 await self.wa.send_qr_payment(lead.phone, session.amount_inr, new_session.qr_image_url)
 

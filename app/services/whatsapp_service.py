@@ -4,6 +4,8 @@ Supports:
 - Template messages (pre-approved by Meta)
 - Interactive messages with image header + body + buttons
 - Text, image, and interactive button messages
+
+All payment references are Razorpay QR only — no UPI/transfer options.
 """
 
 import logging
@@ -48,9 +50,7 @@ class WhatsAppService:
     async def send_template_with_image(self, to_phone: str, template_name: str,
                                         image_url: str, variables: Optional[Dict] = None,
                                         language: str = "en") -> dict:
-        """Send a template that has an image header and body variables."""
         components = []
-        # Image header component
         components.append({
             "type": "header",
             "parameters": [{"type": "image", "image": {"link": image_url}}]
@@ -73,7 +73,7 @@ class WhatsAppService:
             resp.raise_for_status()
             return resp.json()
 
-    # ─── Interactive messages (within 24h window) ─────────────────
+    # ─── Interactive messages ─────────────────────────────────────
 
     async def send_text(self, to_phone: str, text: str) -> dict:
         payload = {"messaging_product": "whatsapp", "to": to_phone, "type": "text", "text": {"body": text}}
@@ -102,7 +102,6 @@ class WhatsAppService:
 
     async def send_interactive_with_image(self, to_phone: str, image_url: str,
                                            body: str, buttons: List[Dict]) -> dict:
-        """Send interactive message with image header + body text + buttons."""
         payload = {
             "messaging_product": "whatsapp",
             "to": to_phone,
@@ -122,21 +121,15 @@ class WhatsAppService:
     # ─── Pipeline-specific messages ──────────────────────────────
 
     async def send_optin_message(self, phone: str, name: str) -> dict:
-        """Send the initial opt-in message with image, text, and 'Interested' button.
-
-        Tries Meta template first (production-safe), falls back to interactive message.
-        The 'saibhai' template has an IMAGE header, so we send header + body params.
-        """
+        """Send the initial opt-in message with image + Interested button."""
         image_url = settings.WA_OPTIN_IMAGE_URL
         body_text = (
-            f"Hi {name or 'there'}! Welcome to Sai Bhai Cricket ID - your trusted cricket betting ID provider. "
-            f"Get instant demo IDs, 24/7 support, and the best odds in the market. "
+            f"Hi {name or 'there'}! Welcome to Sai Bhai Cricket ID - your trusted cricket betting "
+            f"ID provider. Get instant demo IDs, 24/7 support, and the best odds in the market. "
             f"Click 'Interested' below and our team will call you shortly to get started!"
         )
         buttons = [{"type": "reply", "reply": {"id": "interested", "title": "Interested"}}]
 
-        # Try the approved template first — 'saibhai' template has an IMAGE header
-        # so we MUST send header + body components together
         try:
             return await self.send_template_with_image(
                 to_phone=phone,
@@ -146,45 +139,53 @@ class WhatsAppService:
             )
         except Exception as e:
             logger.warning(f"Template send failed ({e}), falling back to interactive message")
-            # Fallback: interactive message with image header (works within 24h window)
             return await self.send_interactive_with_image(phone, image_url, body_text, buttons)
 
     async def send_call_incoming_notice(self, phone: str, name: str = "") -> dict:
-        """Tell the user they will receive a call shortly."""
+        """Tell user they'll receive a call — Hindi style."""
         text = (
-            f"Great, {name or 'there'}! Thanks for your interest. "
-            f"Our team will call you in just a few minutes to help you get started. "
-            f"Please keep your phone ready. Your Sai Bhai Cricket ID account is just a call away!"
+            f"Shukriya {name or 'aapka'} interest ke liye! 🙏\n"
+            f"Hamari team aapko kuch hi minute mein call karegi. "
+            f"Phone ko paas rakhiye — aapka Sai Bhai Cricket ID bas ek call ki doori par hai!"
         )
         return await self.send_text(phone, text)
 
     async def send_no_reply_followup(self, phone: str, name: str) -> dict:
-        return await self.send_text(phone, f"Hi {name}, just checking in! Reply YES to get a call from our team.")
+        return await self.send_text(phone,
+            f"Hi {name}, HUM yahan hain! Kya aap call chaahte hain? Haan batao to call kar dete hain. 😊")
 
     async def send_qr_payment(self, phone: str, amount: float, qr_image_url: str) -> dict:
+        """Send Razorpay QR code with Hindi caption — QR-only payment."""
         caption = (
-            f"Deposit Rs {int(amount)} locked in! Scan this QR with any UPI app to pay.\n"
-            f"Pay exactly Rs {int(amount)} — no text needed in UPI note.\n"
-            f"Payment karte hi ID activate ho jayegi! ✅"
+            f"✅ Rs {int(amount)} ka payment QR taiyaar hai!\n\n"
+            f"📱 PhonePe / GPay / Paytm kholiye\n"
+            f"🔍 Scan QR kariye\n"
+            f"💸 Exact Rs {int(amount)} bhejiye\n"
+            f"⚡ Payment hote hi ID activate!\n\n"
+            f"⚠️ Sirf QR scan karein — kisi aur UPI ID par payment na bhejein!"
         )
         return await self.send_image(phone, qr_image_url, caption)
 
     async def send_payment_reminder(self, phone: str, amount: float) -> dict:
-        return await self.send_text(phone, f"Still waiting for Rs {int(amount)}! Complete within 5 minutes to get your demo ID instantly.")
+        return await self.send_text(phone,
+            f"Sir, Rs {int(amount)} ka payment abhi baaki hai! "
+            f"QR scan karke payment complete karein — ID activate ho jayegi. ⏰")
 
     async def send_payment_success(self, phone: str) -> dict:
-        return await self.send_text(phone, "Payment received! Creating your demo account now...")
+        return await self.send_text(phone,
+            "🎉 Payment received! Abhi aapka demo account bana rahe hain...")
 
     async def send_credentials(self, phone: str, user_id: str, password: str, balance: float) -> dict:
         text = (
-            f"Your demo account is ready!\n"
-            f"Login ID: {user_id}\n"
-            f"Password: {password}\n"
-            f"Starting Balance: Rs {int(balance)}\n\n"
-            f"Download: {settings.PLATFORM_APP_DOWNLOAD_URL}\n"
-            f"Happy betting! For support, reply to this chat anytime. - Sai Bhai Cricket ID"
+            f"🎉 Aapka demo account ready hai!\n\n"
+            f"🔑 Login ID: {user_id}\n"
+            f"🔒 Password: {password}\n"
+            f"💰 Starting Balance: Rs {int(balance)}\n\n"
+            f"📲 App Download: {settings.PLATFORM_APP_DOWNLOAD_URL}\n\n"
+            f"Shubhkamnaye! Koi help chahiye to reply karein. - Sai Bhai Cricket ID"
         )
         return await self.send_text(phone, text)
 
     async def send_rejection_ack(self, phone: str) -> dict:
-        return await self.send_text(phone, "No problem! Reply YES anytime if you change your mind.")
+        return await self.send_text(phone,
+            "Koi baat nahi! Kabhi bhi mann kare to bata dein, call kar denge. 👍")

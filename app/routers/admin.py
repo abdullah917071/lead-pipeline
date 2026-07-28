@@ -24,7 +24,6 @@ from app.models.database import (
 )
 from app.schemas import IncomingLead
 from app.services.orchestrator import PipelineOrchestrator
-from app.services.upi_service import UPIPaymentService
 from app.services.whatsapp_service import WhatsAppService
 
 logger = logging.getLogger(__name__)
@@ -313,26 +312,16 @@ async def admin_ingest(payload: IncomingLead, db: AsyncSession = Depends(get_db)
     return {"id": str(lead.id), "status": lead.status.value}
 
 
-# ─── Payments / UPI ──────────────────────────────────────────────────
+# ─── Payments / UPI (deprecated — Razorpay-only) ─────────────────
 
 @router.get("/upi/accounts")
-async def upi_accounts(db: AsyncSession = Depends(get_db)):
-    accts = (await db.execute(select(MerchantAccount).order_by(MerchantAccount.id))).scalars().all()
-    cfg = (await db.execute(select(ActiveUPIConfig).where(ActiveUPIConfig.id == 1))).scalar_one_or_none()
-    return {
-        "accounts": [{
-            "id": a.id, "upi_id": a.upi_id, "display_name": a.display_name,
-            "daily_cap": a.daily_cap_inr, "current_volume": a.current_volume_inr,
-            "is_active": a.is_active, "is_enabled": a.is_enabled,
-        } for a in accts],
-        "active_account_id": cfg.active_account_id if cfg else None,
-    }
+async def upi_accounts():
+    return {"error": "deprecated", "message": "Razorpay QR only — no UPI accounts"}
 
 
 @router.post("/upi/rotate")
-async def upi_rotate(db: AsyncSession = Depends(get_db)):
-    svc = UPIPaymentService(db)
-    return await svc.manual_rotate()
+async def upi_rotate():
+    return {"error": "deprecated", "message": "Razorpay QR only — no UPI rotation"}
 
 
 @router.get("/payments")

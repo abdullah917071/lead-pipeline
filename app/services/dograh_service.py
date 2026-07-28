@@ -156,3 +156,24 @@ class DograhService:
     async def _get_lead(self, lead_id: UUID) -> Optional[Lead]:
         result = await self.db.execute(select(Lead).where(Lead.id == lead_id))
         return result.scalar_one_or_none()
+
+    async def _get_lead_from_initial_context(self, initial_context: Optional[dict]) -> Optional[Lead]:
+        """Extract lead_id from initial_context (handles both dict and JSON string) and return the lead."""
+        if not initial_context:
+            return None
+        ctx = initial_context
+        if isinstance(ctx, str):
+            try:
+                import json
+                ctx = json.loads(ctx)
+            except (json.JSONDecodeError, TypeError):
+                return None
+        if not isinstance(ctx, dict):
+            return None
+        lead_id_str = ctx.get("lead_id")
+        if not lead_id_str:
+            return None
+        try:
+            return await self._get_lead(UUID(lead_id_str))
+        except (ValueError, AttributeError):
+            return None

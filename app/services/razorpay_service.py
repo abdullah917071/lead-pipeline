@@ -28,6 +28,9 @@ class RazorpayService:
         self.key_secret = settings.RAZORPAY_KEY_SECRET
         self.auth = (self.key_id, self.key_secret)
 
+    def is_configured(self) -> bool:
+        return bool(self.key_id and self.key_secret)
+
     def _auth_header(self) -> str:
         """Basic auth header for Razorpay API."""
         creds = f"{self.key_id}:{self.key_secret}"

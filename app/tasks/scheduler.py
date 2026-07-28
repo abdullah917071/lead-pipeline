@@ -141,12 +141,17 @@ async def midcall_qr_polling(engine):
     When a call is in progress and the AI has extracted confirmed_amount,
     generate the Razorpay QR and send it on WhatsApp immediately — without waiting
     for the post-call webhook.
+
+    This is the SECONDARY path (primary is the mid-call webhook node in the workflow).
+    The poller catches cases where the webhook delivery fails.
     """
     dograh_engine = create_async_engine(
         settings.DOGRAH_DATABASE_URL,
         echo=False,
         pool_size=2,
         max_overflow=2,
+        pool_recycle=120,
+        pool_pre_ping=True,
     )
     pipeline_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     dograh_session = async_sessionmaker(dograh_engine, class_=AsyncSession, expire_on_commit=False)
@@ -157,16 +162,26 @@ async def midcall_qr_polling(engine):
         try:
             async with pipeline_session() as pdb, dograh_session() as ddb:
                 # Find leads where call is active and QR not yet generated
-                active_statuses = (LeadStatus.CALL_TRIGGERED, LeadStatus.CALL_COMPLETED,
-                                    LeadStatus.WA_REPLIED, LeadStatus.AMOUNT_CONFIRMED)
+                # Look for any recently triggered calls (last 30 min) that haven't reached payment stage
+                active_statuses = (
+                    LeadStatus.CALL_TRIGGERED,
+                    LeadStatus.CALL_COMPLETED,
+                    LeadStatus.WA_REPLIED,
+                    LeadStatus.AMOUNT_CONFIRMED,
+                )
+                recently = datetime.utcnow() - timedelta(minutes=30)
+
                 result = await pdb.execute(
                     select(CallLog).join(Lead, CallLog.lead_id == Lead.id)
                     .where(CallLog.status == "initiated")
                     .where(CallLog.dograh_run_id.isnot(None))
                     .where(Lead.status.in_(active_statuses))
-                    .where(Lead.updated_at > datetime.utcnow() - timedelta(minutes=15))  # only recent calls
+                    .where(CallLog.created_at > recently)
                 )
                 active_call_logs = list(result.scalars().all())
+
+                if active_call_logs:
+                    logger.info(f"Mid-call poller: found {len(active_call_logs)} active call logs")
 
                 for call_log in active_call_logs:
                     run_id = call_log.dograh_run_id
@@ -177,9 +192,13 @@ async def midcall_qr_polling(engine):
                     )
                     lead = lead.scalar_one_or_none()
                     if not lead:
+                        logger.warning(f"Mid-call poller: lead {call_log.lead_id} not found for run {run_id}")
                         continue
-                    if lead.status in (LeadStatus.AWAITING_PAYMENT, LeadStatus.QR_GENERATED):
-                        continue  # QR already handled
+                    if lead.status in (LeadStatus.AWAITING_PAYMENT, LeadStatus.QR_GENERATED,
+                                       LeadStatus.PAYMENT_RECEIVED, LeadStatus.PAYMENT_VERIFIED,
+                                       LeadStatus.COMPLETED):
+                        logger.info(f"Mid-call poller: lead {lead.id} already at {lead.status.value} — skipping")
+                        continue
 
                     # Query Dograh workflow_runs table for gathered_context
                     dograh_result = await ddb.execute(
@@ -190,29 +209,44 @@ async def midcall_qr_polling(engine):
                     )
                     row = dograh_result.fetchone()
                     if not row:
+                        logger.debug(f"Mid-call poller: no workflow_runs row for run_id={run_id}, wf_id={settings.DOGRAH_WORKFLOW_ID}")
                         continue
 
                     gathered = row[0] if row[0] else {}
                     run_state = row[1] if len(row) > 1 else ""
-                    if not isinstance(gathered, dict):
+
+                    # Parse gathered_context if it's a string
+                    if isinstance(gathered, str):
                         try:
                             import json
-                            gathered = json.loads(gathered) if isinstance(gathered, str) else {}
+                            gathered = json.loads(gathered)
                         except (json.JSONDecodeError, TypeError):
+                            logger.warning(f"Mid-call poller: could not parse gathered_context for run {run_id}")
                             continue
+
+                    if not isinstance(gathered, dict):
+                        continue
 
                     confirmed_amount = gathered.get("confirmed_amount")
                     if not confirmed_amount:
-                        continue  # Amount not yet confirmed in this call
+                        logger.debug(f"Mid-call poller: no confirmed_amount for run {run_id} (state={run_state})")
+                        continue
 
-                    # Check if the call is still active (state is not completed)
+                    # Check if the call is still active or recently completed
                     # Dograh states: initialized, running, completed, failed, etc.
-                    if run_state in ("completed", "failed"):
-                        continue  # Post-call webhook will handle this
+                    if run_state in ("failed",):
+                        logger.info(f"Mid-call poller: run {run_id} failed — skipping")
+                        continue
 
                     try:
                         amount = float(confirmed_amount)
                     except (ValueError, TypeError):
+                        logger.warning(f"Mid-call poller: invalid confirmed_amount '{confirmed_amount}' for run {run_id}")
+                        continue
+
+                    # Validate amount range
+                    if amount < settings.MIN_AMOUNT_INR or amount > settings.MAX_AMOUNT_INR:
+                        logger.warning(f"Mid-call poller: amount Rs{amount} out of range for run {run_id}")
                         continue
 
                     # Generate QR mid-call!
