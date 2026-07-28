@@ -129,17 +129,7 @@ class WhatsAppService:
             f"Click 'Interested' below and our team will call you shortly to get started!"
         )
         buttons = [{"type": "reply", "reply": {"id": "interested", "title": "Interested"}}]
-
-        try:
-            return await self.send_template_with_image(
-                to_phone=phone,
-                template_name=settings.WA_OPTIN_TEMPLATE_NAME,
-                image_url=image_url,
-                variables={"name": name or "there"},
-            )
-        except Exception as e:
-            logger.warning(f"Template send failed ({e}), falling back to interactive message")
-            return await self.send_interactive_with_image(phone, image_url, body_text, buttons)
+        return await self.send_interactive_with_image(phone, image_url, body_text, buttons)
 
     async def send_call_incoming_notice(self, phone: str, name: str = "") -> dict:
         """Tell user they'll receive a call — Hindi style."""

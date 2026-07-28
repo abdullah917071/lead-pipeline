@@ -70,8 +70,8 @@
       "id": "greet-1",
       "data": {
         "name": "Greeting & Qualification",
-        "prompt": "You are Rohit from Sai Bhai Cricket ID, calling a potential customer.\n\nSTEP 1 - GREET:\n\"Haan ji, namaste! Main Rohit bol raha hoon Sai Bhai Cricket ID se. Aapko online gaming ID ke regarding call kiya tha.\"\n\nSTEP 2 - ENGAGE:\n\"Sir, aap kya online games khelte hain? Jaise Cricket satta, Casino, Rummy, Teen Patti ya Poker?\"\n\nIf yes -> proceed. If no -> politely end call.\n\nBe conversational in Hinglish. Greet first, wait for reply, then ask.",
-        "allow_interrupt": true,
+        "prompt": "You are Rohit from Sai Bhai Cricket ID, calling a potential customer.\n\nCRITICAL RULE: You MUST respond ONLY in Hindi. Never use English in your responses.\n\nSTEP 1 - GREET:\n\"Haan ji, namaste! Main Rohit bol raha hoon Sai Bhai Cricket ID se. Aapko online gaming ID ke regarding call kiya tha.\"\n\nSTEP 2 - ENGAGE:\n\"Sir, aap kya online games khelte hain? Jaise Cricket satta, Casino, Rummy, Teen Patti ya Poker?\"\n\nIf yes -> proceed. If no -> politely end call.\n\nBe conversational. Greet first, wait for reply, then ask.",
+        "allow_interrupt": false,
         "wait_for_user_response": true
       },
       "type": "startCall",
