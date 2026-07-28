@@ -16,8 +16,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.database import Lead, LeadStatus, PaymentSession, ProvisionedAccount
-from app.schemas import IncomingLead, DograhWebhookPayload
+from app.models.database import Lead, LeadStatus, PaymentSession, ProvisionedAccount, CallLog
+from app.schemas import IncomingLead, DograhWebhookPayload, MidCallAmountConfirmed
 from app.services.lead_service import LeadService
 from app.services.whatsapp_service import WhatsAppService
 from app.services.dograh_service import DograhService
@@ -66,7 +66,8 @@ class PipelineOrchestrator:
         if not lead:
             return None
         if lead.status not in (LeadStatus.WA_SENT, LeadStatus.PENDING_WA_OPTIN,
-                                 LeadStatus.CALL_FAILED, LeadStatus.CALL_TRIGGERED):
+                                 LeadStatus.CALL_FAILED, LeadStatus.CALL_TRIGGERED,
+                                 LeadStatus.WA_REPLIED):
             return lead
 
         intent = self._classify_intent(message_text)
@@ -77,11 +78,11 @@ class PipelineOrchestrator:
             except Exception as e:
                 logger.error(f"Failed to send call notice to {lead.phone}: {e}")
 
-            # Step 2b: Trigger voice call
-            lead = await self.leads.advance(lead.id, LeadStatus.WA_REPLIED)
+            # Step 2b: Trigger voice call FIRST, THEN advance status
             try:
                 await self.dograh.trigger_outbound_call(
                     lead_id=lead.id, phone=lead.phone, name=lead.name or "")
+                # trigger_outbound_call advances to CALL_TRIGGERED internally
             except Exception as e:
                 # Never swallow — record the failure as a call log so it is
                 # visible (calls=0 with no trace was a blind spot).
@@ -118,11 +119,29 @@ class PipelineOrchestrator:
 
     # ─── Step 3: Call completed -> extract amount ──────────────────
 
+    async def _has_unpaid_qr(self, lead: Lead) -> bool:
+        """Check if the lead already has an active/unpaid QR sent (mid-call generated it)."""
+        result = await self.db.execute(
+            select(PaymentSession).where(PaymentSession.lead_id == lead.id)
+            .where(PaymentSession.status == "active")
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
     async def handle_call_completed(self, payload: DograhWebhookPayload) -> Optional[Lead]:
-        """Dograh call completed. Extract confirmed amount and generate QR."""
+        """Dograh call completed. Extract confirmed amount and generate QR.
+
+        If the QR was already generated mid-call (via handle_midcall_amount_confirmed),
+        skip duplicate QR generation but still advance the lead status.
+        """
         lead = await self.dograh.process_call_webhook(payload)
         if not lead:
             return None
+
+        # If QR was already generated mid-call, skip duplicate
+        if lead.status in (LeadStatus.AWAITING_PAYMENT, LeadStatus.QR_GENERATED):
+            logger.info(f"Lead {lead.id} already has QR generated mid-call — skipping post-call QR")
+            return lead
 
         gathered = payload.gathered_context or {}
         amount = gathered.get("confirmed_amount")
@@ -137,8 +156,54 @@ class PipelineOrchestrator:
         else:
             await self.wa.send_text(lead.phone,
                 f"Great talking to you! How much would you like to deposit? "
-                f"Minimum Rs {int(min_amt)}. Reply with the amount in rupees (e.g. 500).")
+                f"Minimum Rs {int(min_amt)}. Just reply with the amount (e.g. 500) and I'll send you the payment QR on WhatsApp.")
             return lead
+
+    # ─── Step 3a: Mid-call amount confirmation (from Dograh webhook node) ──
+
+    async def handle_midcall_amount_confirmed(self, lead_id_str: str, amount: float,
+                                               dograh_run_id: int) -> Optional[Lead]:
+        """Handle mid-call amount confirmation from Dograh's webhook node.
+
+        Dograh fires this webhook node when the AI confirms the amount DURING the call.
+        We generate the Razorpay QR and send it on WhatsApp immediately,
+        so the AI can truthfully tell the customer to check WhatsApp.
+        """
+        from uuid import UUID
+        try:
+            lead_id = UUID(lead_id_str)
+        except ValueError:
+            logger.error(f"Invalid lead_id in mid-call webhook: {lead_id_str}")
+            return None
+
+        lead = await self.leads._get(lead_id)
+        if not lead:
+            logger.error(f"Lead {lead_id} not found for mid-call webhook")
+            return None
+
+        # Dedup: if QR already generated for this lead, skip
+        if lead.status in (LeadStatus.AWAITING_PAYMENT, LeadStatus.QR_GENERATED):
+            logger.info(f"Lead {lead.id} already has QR — skipping mid-call duplicate")
+            return lead
+
+        if lead.status in (LeadStatus.CALL_TRIGGERED, LeadStatus.CALL_COMPLETED,
+                            LeadStatus.AMOUNT_CONFIRMED, LeadStatus.WA_REPLIED):
+            pass  # Valid states to proceed
+        else:
+            logger.warning(f"Lead {lead.id} in unexpected state {lead.status} for mid-call QR — proceeding anyway")
+
+        # Validate amount
+        min_amt = settings.MIN_AMOUNT_INR
+        max_amt = settings.MAX_AMOUNT_INR
+        if not (min_amt <= float(amount) <= max_amt):
+            logger.warning(f"Mid-call amount Rs{amount} out of range for lead {lead.id} — skipping")
+            return lead
+
+        # Advance to amount_confirmed then generate QR
+        lead = await self.leads.advance(lead.id, LeadStatus.AMOUNT_CONFIRMED)
+        lead = await self._generate_and_send_qr(lead, float(amount))
+        logger.info(f"Mid-call QR generated and sent to {lead.phone}: Rs {amount}")
+        return lead
 
     # ─── Step 3b: User replies with amount via WhatsApp ────────────
 

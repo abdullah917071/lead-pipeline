@@ -10,6 +10,7 @@ Flow:
 """
 
 import logging
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Depends, HTTPException
@@ -22,7 +23,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from app.config import get_settings
 from app.models.database import Base, Lead, LeadStatus, MerchantAccount, ActiveUPIConfig, CallLog, PaymentSession, ProvisionedAccount
 from app.schemas import (IncomingLead, DograhWebhookPayload, LeadResponse,
-                          PaymentSuccessRequest, DashboardStats)
+                          PaymentSuccessRequest, DashboardStats, MidCallAmountConfirmed)
 from app.services.orchestrator import PipelineOrchestrator
 from app.services.upi_service import UPIPaymentService
 from app.services.razorpay_service import RazorpayService
@@ -38,6 +39,8 @@ engine = create_async_engine(
     echo=settings.DEBUG,
     pool_size=10,
     max_overflow=20,
+    pool_recycle=300,
+    pool_pre_ping=True,
 )
 SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -49,6 +52,13 @@ async def get_db() -> AsyncSession:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Configure logging — INFO level so we can actually see what's happening
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        stream=sys.stdout,
+        force=True,
+    )
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Pipeline Orchestrator started - production mode")
@@ -187,6 +197,29 @@ async def dograh_webhook(payload: DograhWebhookPayload, db: AsyncSession = Depen
     if lead:
         return {"status": "ok", "lead_id": str(lead.id), "lead_status": lead.status.value}
     return {"status": "ok", "info": "no lead matched"}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Step 3b: Dograh mid-call amount confirmation webhook
+# ═══════════════════════════════════════════════════════════════════
+
+@app.post("/api/webhooks/dograh-midcall")
+async def dograh_midcall_webhook(payload: MidCallAmountConfirmed, db: AsyncSession = Depends(get_db)):
+    """Handle Dograh mid-call webhook node — fires when AI confirms amount during the call.
+
+    Generates Razorpay QR immediately and sends it on WhatsApp while the call is still active,
+    so the AI can truthfully tell the customer to check WhatsApp for the QR.
+    """
+    orchestrator = PipelineOrchestrator(db)
+    lead = await orchestrator.handle_midcall_amount_confirmed(
+        lead_id_str=payload.lead_id,
+        amount=payload.confirmed_amount,
+        dograh_run_id=payload.run_id,
+    )
+    if lead:
+        logger.info(f"Mid-call QR generated: lead={lead.id}, amount=Rs{payload.confirmed_amount}, status={lead.status.value}")
+        return {"status": "ok", "lead_id": str(lead.id), "lead_status": lead.status.value}
+    return {"status": "ok", "info": "lead not found or amount already processed"}
 
 
 # ═══════════════════════════════════════════════════════════════════

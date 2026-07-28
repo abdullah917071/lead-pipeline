@@ -56,7 +56,7 @@ class WhatsAppService:
             "parameters": [{"type": "image", "image": {"link": image_url}}]
         })
         if variables:
-            params = [{"type": "text", "value": v} for v in variables.values()]
+            params = [{"type": "text", "text": v} for v in variables.values()]
             components.append({"type": "body", "parameters": params})
         payload = {
             "messaging_product": "whatsapp",
@@ -125,6 +125,7 @@ class WhatsAppService:
         """Send the initial opt-in message with image, text, and 'Interested' button.
 
         Tries Meta template first (production-safe), falls back to interactive message.
+        The 'saibhai' template has an IMAGE header, so we send header + body params.
         """
         image_url = settings.WA_OPTIN_IMAGE_URL
         body_text = (
@@ -134,14 +135,13 @@ class WhatsAppService:
         )
         buttons = [{"type": "reply", "reply": {"id": "interested", "title": "Interested"}}]
 
-        # Try the approved template first (production-safe, works outside 24h window).
-        # saibhaiimg already has the image baked into its HEADER, so we only pass the
-        # BODY variable {{1}} (name). Do NOT send an image header component here or the
-        # API rejects it ("header handle not needed").
+        # Try the approved template first — 'saibhai' template has an IMAGE header
+        # so we MUST send header + body components together
         try:
-            return await self.send_template(
+            return await self.send_template_with_image(
                 to_phone=phone,
                 template_name=settings.WA_OPTIN_TEMPLATE_NAME,
+                image_url=image_url,
                 variables={"name": name or "there"},
             )
         except Exception as e:
@@ -163,10 +163,9 @@ class WhatsAppService:
 
     async def send_qr_payment(self, phone: str, amount: float, qr_image_url: str) -> dict:
         caption = (
-            f"Awesome! Deposit locked at Rs {int(amount)}.\n"
-            f"Scan this QR with PhonePe/GPay/Paytm.\n"
-            f"Pay exactly Rs {int(amount)}. Do not include text in UPI note.\n"
-            f"Your Sai Bhai Cricket ID demo account will be sent instantly after payment!"
+            f"Deposit Rs {int(amount)} locked in! Scan this QR with any UPI app to pay.\n"
+            f"Pay exactly Rs {int(amount)} — no text needed in UPI note.\n"
+            f"Payment karte hi ID activate ho jayegi! ✅"
         )
         return await self.send_image(phone, qr_image_url, caption)
 

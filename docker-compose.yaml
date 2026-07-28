@@ -140,6 +140,20 @@ services:
     networks:
       - pipeline
 
+  # ═══════════════════════════════════════════════════════════════════
+  # Dashboard (Next.js lead pipeline control center)
+  # ═══════════════════════════════════════════════════════════════════
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: lp-dashboard
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    networks:
+      - pipeline
+
 volumes:
   pgdata:
   redisdata:

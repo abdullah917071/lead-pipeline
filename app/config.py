@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     DOGRAH_API_KEY: str = ""
     DOGRAH_TRIGGER_PATH: str = "suppremo-onboarding"
     DOGRAH_TELEPHONY_CONFIG_ID: int = 1
+    DOGRAH_WORKFLOW_ID: int = 1
+    # Dograh's own postgres (for mid-call polling of gathered_context)
+    DOGRAH_DATABASE_URL: str = "postgresql+asyncpg://dograh:dograh_pg@dograh-postgres:5432/dograh"
+    MIDCALL_POLL_INTERVAL_SECONDS: int = 8
 
     # WhatsApp
     WA_API_URL: str = "https://graph.facebook.com/v21.0"

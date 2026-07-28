@@ -18,12 +18,17 @@ def normalize_phone(phone: str) -> str:
     """Normalize phone to Meta's WhatsApp format: digits only, no '+'.
 
     Incoming WhatsApp webhooks send '919235587822' while leads may be
-    stored with a '+' prefix ('+919235587822'). Both must match for
+    stored with a '+' prefix ('+919****7822'). Both must match for
     lookups to succeed.
+
+    Also ensures 10-digit India numbers get the 91 country code prefix
+    so they match what Meta sends in webhooks.
     """
     if not phone:
         return phone
     digits = "".join(ch for ch in str(phone) if ch.isdigit())
+    if len(digits) == 10:
+        digits = f"91{digits}"
     return digits
 
 

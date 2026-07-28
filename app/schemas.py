@@ -19,6 +19,14 @@ class IncomingLead(BaseModel):
     utm_source: Optional[str] = None
 
 
+class MidCallAmountConfirmed(BaseModel):
+    """Payload from Dograh mid-call webhook node when amount is confirmed during the call."""
+    run_id: int
+    lead_id: str
+    confirmed_amount: float
+    phone: str = ""
+
+
 class DograhWebhookPayload(BaseModel):
     run_id: int
     workflow_run_id: Optional[int] = None
