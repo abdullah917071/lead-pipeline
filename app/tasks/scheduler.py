@@ -168,6 +168,8 @@ async def midcall_qr_polling(engine):
                     LeadStatus.CALL_COMPLETED,
                     LeadStatus.WA_REPLIED,
                     LeadStatus.AMOUNT_CONFIRMED,
+                    LeadStatus.AWAITING_PAYMENT,
+                    LeadStatus.QR_GENERATED,
                 )
                 recently = datetime.utcnow() - timedelta(minutes=30)
 
@@ -194,8 +196,7 @@ async def midcall_qr_polling(engine):
                     if not lead:
                         logger.warning(f"Mid-call poller: lead {call_log.lead_id} not found for run {run_id}")
                         continue
-                    if lead.status in (LeadStatus.AWAITING_PAYMENT, LeadStatus.QR_GENERATED,
-                                       LeadStatus.PAYMENT_RECEIVED, LeadStatus.PAYMENT_VERIFIED,
+                    if lead.status in (LeadStatus.PAYMENT_RECEIVED, LeadStatus.PAYMENT_VERIFIED,
                                        LeadStatus.COMPLETED):
                         logger.info(f"Mid-call poller: lead {lead.id} already at {lead.status.value} — skipping")
                         continue
@@ -229,7 +230,32 @@ async def midcall_qr_polling(engine):
 
                     confirmed_amount = gathered.get("confirmed_amount")
                     if not confirmed_amount:
-                        logger.debug(f"Mid-call poller: no confirmed_amount for run {run_id} (state={run_state})")
+                        # Check if run completed/failed — update call_log status
+                        if run_state == "completed":
+                            call_log.status = "completed"
+                            # Check for call_disposition in gathered_context
+                            disposition = gathered.get("call_disposition", "")
+                            if disposition in ("no-answer",):
+                                call_log.status = "no_answer"
+                                lead.status = LeadStatus.CALL_FAILED
+                                lead.updated_at = datetime.utcnow()
+                            elif disposition in ("voicemail",):
+                                call_log.status = "voicemail"
+                                lead.status = LeadStatus.CALL_FAILED
+                                lead.updated_at = datetime.utcnow()
+                            else:
+                                lead.status = LeadStatus.CALL_COMPLETED
+                                lead.updated_at = datetime.utcnow()
+                            await pdb.commit()
+                            logger.info(f"Mid-call poller: run {run_id} completed (no amount) — lead={lead.id}, disposition={disposition}")
+                        elif run_state == "failed":
+                            call_log.status = "failed"
+                            lead.status = LeadStatus.CALL_FAILED
+                            lead.updated_at = datetime.utcnow()
+                            await pdb.commit()
+                            logger.info(f"Mid-call poller: run {run_id} failed — lead={lead.id}")
+                        else:
+                            logger.debug(f"Mid-call poller: no confirmed_amount for run {run_id} (state={run_state})")
                         continue
 
                     # Check if the call is still active or recently completed
@@ -249,15 +275,22 @@ async def midcall_qr_polling(engine):
                         logger.warning(f"Mid-call poller: amount Rs{amount} out of range for run {run_id}")
                         continue
 
-                    # Generate QR mid-call!
-                    from app.services.orchestrator import PipelineOrchestrator
-                    orch = PipelineOrchestrator(pdb)
-                    await orch.handle_midcall_amount_confirmed(
-                        lead_id_str=str(lead.id),
-                        amount=amount,
-                        dograh_run_id=run_id,
-                    )
-                    logger.info(f"Mid-call QR via polling: lead={lead.id}, amount=Rs{amount}, run={run_id}")
+                    # Generate QR mid-call (only if lead not already at AWAITING_PAYMENT)
+                    if lead.status not in (LeadStatus.AWAITING_PAYMENT, LeadStatus.QR_GENERATED):
+                        from app.services.orchestrator import PipelineOrchestrator
+                        orch = PipelineOrchestrator(pdb)
+                        await orch.handle_midcall_amount_confirmed(
+                            lead_id_str=str(lead.id),
+                            amount=amount,
+                            dograh_run_id=run_id,
+                        )
+                        logger.info(f"Mid-call QR via polling: lead={lead.id}, amount=Rs{amount}, run={run_id}")
+
+                    # Mark call_log as completed if the run finished
+                    if run_state == "completed" and call_log.status == "initiated":
+                        call_log.status = "completed"
+                        await pdb.commit()
+                        logger.info(f"Mid-call poller: run {run_id} completed — call_log updated")
 
         except Exception as e:
             logger.error(f"Error in midcall_qr_polling: {e}", exc_info=True)

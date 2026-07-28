@@ -154,7 +154,7 @@ async def whatsapp_webhook(request: Request, db: AsyncSession = Depends(get_db))
             return {"status": "ok", "lead_id": str(lead.id)}
 
         # Route based on lead status
-        if msg_type == "interactive":
+        if msg_type in ("interactive", "button"):
             # Button click — always treat as interested for opt-in template
             lead = await orchestrator.handle_wa_reply(phone, "interested")
         elif lead.status == LeadStatus.AMOUNT_CONFIRMED:

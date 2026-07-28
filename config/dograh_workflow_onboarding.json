@@ -1,19 +1,158 @@
 {
   "edges": [
-    {"id": "edge-trigger", "source": "trigger-1", "target": "greet-1", "data": {"label": "New lead", "condition": "Trigger received"}},
-    {"id": "edge-qualify", "source": "greet-1", "target": "intro-1", "data": {"label": "Plays betting", "condition": "Customer plays online betting games", "transition_speech": "Great! Let me tell you about our platform."}},
-    {"id": "edge-not-interested", "source": "greet-1", "target": "end-cold", "data": {"label": "Does not play", "condition": "Customer does not play any betting games", "transition_speech": "No problem, have a great day!"}},
-    {"id": "edge-intro-to-amount", "source": "intro-1", "target": "amount-1", "data": {"label": "After intro", "condition": "Platform introduction and offer explained", "transition_speech": "So how much would you like to start with?"}},
-    {"id": "edge-amount-to-payment", "source": "amount-1", "target": "payment-1", "data": {"label": "Amount confirmed", "condition": "Customer has confirmed a deposit amount", "transition_speech": "Excellent! Let me generate the payment QR."}},
-    {"id": "edge-end", "source": "payment-1", "target": "end-1", "data": {"label": "Call ending", "condition": "Payment instructions given", "transition_speech": "Thank you for your time!"}}
+    {
+      "id": "edge-not-interested",
+      "data": {
+        "label": "Does not play",
+        "condition": "Customer does not play any betting games",
+        "transition_speech": "No problem, have a great day!"
+      },
+      "source": "greet-1",
+      "target": "end-cold"
+    },
+    {
+      "id": "edge-qualify",
+      "data": {
+        "label": "Plays betting",
+        "condition": "Customer plays online betting games",
+        "transition_speech": "Great! Let me tell you about our platform."
+      },
+      "source": "greet-1",
+      "target": "intro-1"
+    },
+    {
+      "id": "edge-intro-to-amount",
+      "data": {
+        "label": "After intro",
+        "condition": "Platform introduction and offer explained",
+        "transition_speech": "So how much would you like to start with?"
+      },
+      "source": "intro-1",
+      "target": "amount-1"
+    },
+    {
+      "id": "edge-amount-to-payment",
+      "source": "amount-1",
+      "target": "payment-1",
+      "data": {
+        "label": "Amount confirmed",
+        "condition": "Customer has confirmed a deposit amount",
+        "transition_speech": "Excellent! Ab main aapke WhatsApp par QR bhej raha hoon."
+      }
+    },
+    {
+      "id": "edge-payment-to-end",
+      "source": "payment-1",
+      "target": "end-1",
+      "data": {
+        "label": "Call done",
+        "condition": "Payment instructions given",
+        "transition_speech": "Thank you!"
+      }
+    }
   ],
   "nodes": [
-    {"id": "trigger-1", "type": "trigger", "position": {"x": -300, "y": 0}, "data": {"name": "Public Trigger", "trigger_path": "eb155119-43b7-4410-a94b-b9b331455fbb", "trigger_type": "phone_call", "wait_for_user_response": false}},
-    {"id": "greet-1", "type": "startCall", "position": {"x": 0, "y": 0}, "data": {"name": "Greeting & Qualification", "prompt": "You are Rohit from Sai Bhai Cricket ID. You are calling a potential customer for online betting game IDs.\n\nSTEP 1 - GREETING:\n\"Haan ji sir, very good afternoon. Main Rohit baat kar raha hoon. Sir, aapko online betting game ke regarding call kiya tha.\"\n\nWait for their response.\n\nSTEP 2 - QUALIFICATION (ask only ONE question):\n\"Aap kisi site pe online betting game play karte hain? Jaise Cricket, Casino, Rummy, Poker ya Teen Patti.\"\n\nIf they say yes, continue. If no, politely end the call.\n\nIMPORTANT: Do not read everything at once. Greet first, wait, then ask the qualification question. Be conversational.", "allow_interrupt": true, "wait_for_user_response": true}},
-    {"id": "intro-1", "type": "agentNode", "position": {"x": 300, "y": 0}, "data": {"name": "Platform Intro & Offer", "prompt": "The customer confirmed they play betting games. Now introduce the platform.\n\nPLATFORM INTRODUCTION:\n\"Sir, hamari jo ID hai usse aap ek hi account se Cricket, Casino, Rummy, Poker, Teen Patti aur bahut saare online games play kar sakte hain. Self Deposit aur Manual Deposit dono available hain aur hamare paas all panel exchange ki IDs bhi available hain.\"\n\nOFFER:\n\"First deposit par 4% bonus aur uske baad har deposit par 2% bonus provide kiya jata hai.\"\n\nWait for their reaction. Be natural and conversational.", "allow_interrupt": true, "wait_for_user_response": true}},
-    {"id": "amount-1", "type": "agentNode", "position": {"x": 600, "y": 0}, "data": {"name": "Deposit Amount", "prompt": "Ask for the customer preferred deposit amount.\n\nSAY:\n\"Sir, aap kitne amount se start karna chahenge?\"\n\nWait for the customer response. Example amounts: Rs 500, Rs 1000, Rs 2000.\n\nOnce they state an amount, repeat it for confirmation:\n\"Theek hai sir, Rs {{amount}} ka deposit confirm kar doon?\"\n\nProceed ONLY after the customer explicitly confirms.\n\nIMPORTANT: Extract the final confirmed amount as confirmed_amount.", "allow_interrupt": true, "wait_for_user_response": true, "extraction_enabled": true, "extraction_variables": [{"name": "confirmed_amount", "type": "number", "prompt": "The exact deposit amount the customer confirmed in Indian Rupees. Must be a number like 500, 1000, or 2000."}]}},
-    {"id": "payment-1", "type": "agentNode", "position": {"x": 900, "y": 0}, "data": {"name": "Payment QR", "prompt": "The customer confirmed the deposit amount. The system generates a Razorpay QR code automatically and sends it on WhatsApp.\n\nSAY:\n\"Sir, maine Rs {{confirmed_amount}} ka payment QR generate kar diya hai. Aap payment complete kar dijiye, payment receive hote hi main aage ki process complete karwa dunga.\"\n\nNote: Do NOT claim credentials have been issued. The system sends them after payment via webhook.", "allow_interrupt": false, "wait_for_user_response": false}},
-    {"id": "end-cold", "type": "endCall", "position": {"x": 0, "y": 200}, "data": {"name": "End - Not Interested", "prompt": "Politely end the call. Say: \"No problem sir, thank you for your time. Have a great day!\""}},
-    {"id": "end-1", "type": "endCall", "position": {"x": 1200, "y": 0}, "data": {"name": "End Call", "prompt": "Thank them warmly. Say: \"Thank you for choosing Sai Bhai Cricket ID! Payment QR aapke WhatsApp par aa jayega. Payment complete karte hi aapka ID activate kar diya jayega. Thank you sir, have a great day!\""}}
+    {
+      "id": "trigger-1",
+      "data": {
+        "name": "Public Trigger",
+        "trigger_path": "eb155119-43b7-4410-a94b-b9b331455fbb",
+        "trigger_type": "phone_call",
+        "wait_for_user_response": false
+      },
+      "type": "trigger",
+      "position": {
+        "x": -300,
+        "y": 0
+      }
+    },
+    {
+      "id": "greet-1",
+      "data": {
+        "name": "Greeting & Qualification",
+        "prompt": "You are Rohit from Sai Bhai Cricket ID, calling a potential customer.\n\nSTEP 1 - GREET:\n\"Haan ji, namaste! Main Rohit bol raha hoon Sai Bhai Cricket ID se. Aapko online gaming ID ke regarding call kiya tha.\"\n\nSTEP 2 - ENGAGE:\n\"Sir, aap kya online games khelte hain? Jaise Cricket satta, Casino, Rummy, Teen Patti ya Poker?\"\n\nIf yes -> proceed. If no -> politely end call.\n\nBe conversational in Hinglish. Greet first, wait for reply, then ask.",
+        "allow_interrupt": true,
+        "wait_for_user_response": true
+      },
+      "type": "startCall",
+      "position": {
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "id": "intro-1",
+      "data": {
+        "name": "Platform Intro & Offer",
+        "prompt": "Customer confirmed they play betting games. Introduce Sai Bhai.\n\nSAY: \"Sir, hamari ID se aap Cricket match satta, Casino, Rummy, Poker, Teen Patti \u2014 sab kuch ek hi account mein khel sakte hain. Self Deposit aur Manual Deposit dono available hain. All panel exchange IDs bhi provide karte hain.\"\n\nOFFER: \"First deposit par 4% bonus, uske baad har deposit par 2% bonus.\"\n\nWait for their reaction. Be natural.",
+        "allow_interrupt": true,
+        "wait_for_user_response": true
+      },
+      "type": "agentNode",
+      "position": {
+        "x": 300,
+        "y": 0
+      }
+    },
+    {
+      "id": "amount-1",
+      "data": {
+        "name": "Deposit Amount",
+        "prompt": "Ask for their preferred deposit amount.\n\nSAY: \"Sir, aap kitne amount se start karna chahenge? Minimum Rs 500 se start kar sakte hain.\"\n\nWait for their response. Once they state an amount, confirm:\n\"Theek hai sir, Rs [amount] confirm kar doon?\"\n\nCRITICAL: Proceed ONLY after they explicitly confirm. Extract the confirmed amount as confirmed_amount.",
+        "allow_interrupt": true,
+        "extraction_enabled": true,
+        "extraction_variables": [
+          {
+            "name": "confirmed_amount",
+            "type": "number",
+            "prompt": "Exact deposit amount the customer confirmed in Indian Rupees. Numbers only like 500, 1000."
+          }
+        ],
+        "wait_for_user_response": true
+      },
+      "type": "agentNode",
+      "position": {
+        "x": 600,
+        "y": 0
+      }
+    },
+    {
+      "id": "payment-1",
+      "data": {
+        "name": "Payment QR",
+        "prompt": "The system just sent a Razorpay QR code to the customer's WhatsApp.\n\nSAY: \"Sir, Rs {{confirmed_amount}} ka payment QR aapke WhatsApp par bhej diya hai. Aap PhonePe, GPay ya Paytm mein QR scan karke payment kar dijiye. Payment confirm hote hi aapka ID activate ho jayega. Koi issue ho to WhatsApp par batayein.\"\n\nLet them respond if they have questions.",
+        "allow_interrupt": true,
+        "wait_for_user_response": true
+      },
+      "type": "agentNode",
+      "position": {
+        "x": 900,
+        "y": 0
+      }
+    },
+    {
+      "id": "end-cold",
+      "data": {
+        "name": "End - Not Interested",
+        "prompt": "IMPORTANT RULE: Speak ONLY in Hindi/Hinglish.\n\"Koi baat nahi sir, thank you for your time. Kabhi need ho to contact karein.\""
+      },
+      "type": "endCall",
+      "position": {
+        "x": 0,
+        "y": 200
+      }
+    },
+    {
+      "id": "end-1",
+      "data": {
+        "name": "End Call",
+        "prompt": "End warmly: \"Shukriya sir! Payment QR aapke WhatsApp par aa gaya hai. Payment complete karte hi ID activate. Agar koi problem ho to WhatsApp par message karein. Thank you, have a great day!\""
+      },
+      "type": "endCall",
+      "position": {
+        "x": 1200,
+        "y": 0
+      }
+    }
   ]
 }
