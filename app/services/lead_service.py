@@ -92,8 +92,13 @@ class LeadService:
 
     async def get_by_phone(self, phone: str) -> Optional[Lead]:
         norm = normalize_phone(phone)
-        result = await self.db.execute(select(Lead).where(Lead.phone == norm))
-        return result.scalar_one_or_none()
+        result = await self.db.execute(select(Lead).where(Lead.phone == norm).order_by(Lead.updated_at.desc()))
+        leads = list(result.scalars().all())
+        if not leads:
+            return None
+        if len(leads) > 1:
+            logger.warning(f"Multiple leads found for phone {norm} — returning most recent")
+        return leads[0]
 
     async def get_pending_sessions(self) -> List[PaymentSession]:
         now = datetime.utcnow()
