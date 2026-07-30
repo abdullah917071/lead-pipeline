@@ -1,0 +1,14 @@
+{
+  "name": "sai_bhai_welcome_v4",
+  "status": "APPROVED",
+  "category": "MARKETING",
+  "language": "en",
+  "body": "Hi {{1}}, Sai Bhai Cricket ID mein aapka swagat hai! Apna Game ID paane ke liye neeche Interested par tap karein. Hamari team aapko jaldi call karegi.",
+  "buttons": [
+    {
+      "type": "QUICK_REPLY",
+      "text": "Interested"
+    }
+  ],
+  "notes": "Submitted to Meta on 2026-07-28. No image header; do not enable in runtime until Meta status is APPROVED."
+}

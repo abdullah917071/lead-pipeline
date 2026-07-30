@@ -116,9 +116,20 @@ class PaymentService:
         """Match payment by ref_id (most reliable)."""
         result = await self.db.execute(
             select(PaymentSession).where(PaymentSession.ref_id == ref_id)
-            .where(PaymentSession.status == "active"))
+            .where(PaymentSession.status == "active")
+            .where(PaymentSession.expires_at > datetime.utcnow()))
         session = result.scalar_one_or_none()
         if session:
+            # Razorpay reports integer paise. Compare integer paise exactly,
+            # rather than floats, to reject even a one-paise mismatch.
+            expected_paise = round(float(session.amount_inr) * 100)
+            received_paise = round(float(amount) * 100)
+            if expected_paise != received_paise:
+                logger.error(
+                    f"Payment amount mismatch for ref={ref_id}: "
+                    f"expected_paise={expected_paise}, received_paise={received_paise}"
+                )
+                return None
             session.status = "paid"
             session.paid_at = datetime.utcnow()
             session.utr_number = utr
@@ -129,7 +140,10 @@ class PaymentService:
             await self.db.commit()
             logger.info(f"Payment matched by ref_id: ref={ref_id}, utr={utr}")
             return session
-        return await self.match_incoming_payment(amount, utr)
+        # A supplied reference ID must identify its exact active QR; falling back
+        # to amount-only matching can credit a different customer's payment.
+        logger.error(f"No active payment session for ref={ref_id}")
+        return None
 
     # ─── Helpers ───────────────────────────────────────────────────
 

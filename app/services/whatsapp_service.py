@@ -121,15 +121,15 @@ class WhatsAppService:
     # ─── Pipeline-specific messages ──────────────────────────────
 
     async def send_optin_message(self, phone: str, name: str) -> dict:
-        """Send the initial opt-in message with image + Interested button."""
-        image_url = settings.WA_OPTIN_IMAGE_URL
-        body_text = (
-            f"Hi {name or 'there'}! Welcome to Sai Bhai Cricket ID - your trusted cricket betting "
-            f"ID provider. Get instant demo IDs, 24/7 support, and the best odds in the market. "
-            f"Click 'Interested' below and our team will call you shortly to get started!"
+        """Send the approved image-header template required for first contact."""
+        if not settings.WA_OPTIN_TEMPLATE_NAME or not settings.WA_OPTIN_IMAGE_URL:
+            raise RuntimeError("WhatsApp opt-in template name and image URL must be configured")
+        return await self.send_template_with_image(
+            phone,
+            settings.WA_OPTIN_TEMPLATE_NAME,
+            settings.WA_OPTIN_IMAGE_URL,
+            {"name": name or "there"},
         )
-        buttons = [{"type": "reply", "reply": {"id": "interested", "title": "Interested"}}]
-        return await self.send_interactive_with_image(phone, image_url, body_text, buttons)
 
     async def send_call_incoming_notice(self, phone: str, name: str = "") -> dict:
         """Tell user they'll receive a call — Hindi style."""
@@ -151,7 +151,7 @@ class WhatsAppService:
             f"📱 PhonePe / GPay / Paytm kholiye\n"
             f"🔍 Scan QR kariye\n"
             f"💸 Exact Rs {int(amount)} bhejiye\n"
-            f"⚡ Payment hote hi ID activate!\n\n"
+            f"⚡ Payment hote hi aapko ID WhatsApp par receive ho jayegi!\n\n"
             f"⚠️ Sirf QR scan karein — kisi aur UPI ID par payment na bhejein!"
         )
         return await self.send_image(phone, qr_image_url, caption)

@@ -9,12 +9,13 @@ Flow:
   Instant demo credentials
 """
 
+import json
 import logging
 import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Depends, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy import func, select
@@ -32,6 +33,19 @@ from app.tasks.scheduler import start_scheduler
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
+
+
+def is_configured_whatsapp_phone_number(value: object) -> bool:
+    """Accept webhook events only for this deployment's WhatsApp phone ID."""
+    if not isinstance(value, dict):
+        return False
+    metadata = value.get("metadata", {})
+    if not isinstance(metadata, dict):
+        return False
+    received_phone_id = str(metadata.get("phone_number_id", "")).strip()
+    expected_phone_id = str(settings.WA_PHONE_NUMBER_ID or "").strip()
+    return bool(expected_phone_id) and received_phone_id == expected_phone_id
+
 
 engine = create_async_engine(
     settings.DATABASE_URL,
@@ -85,6 +99,61 @@ app.add_middleware(
 )
 
 
+@app.post("/internal/gemini-vertex/v1/chat/completions")
+async def gemini_vertex_chat_completions(request: Request):
+    """Internal OpenAI-compatible bridge from Dograh to Vertex Gemini."""
+    expected_token = settings.GEMINI_VERTEX_PROXY_TOKEN
+    auth = request.headers.get("Authorization", "")
+    if not expected_token or auth != f"Bearer {expected_token}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not settings.GEMINI_VERTEX_API_KEY or not settings.GEMINI_VERTEX_PROJECT_ID:
+        raise HTTPException(status_code=503, detail="Gemini Vertex bridge is not configured")
+
+    from app.services.gemini_vertex_proxy import complete_via_vertex
+
+    body = await request.json()
+    try:
+        completion = await complete_via_vertex(
+            body,
+            api_key=settings.GEMINI_VERTEX_API_KEY,
+            project_id=settings.GEMINI_VERTEX_PROJECT_ID,
+            location=settings.GEMINI_VERTEX_LOCATION,
+        )
+    except Exception as exc:
+        logger.exception("Gemini Vertex bridge request failed")
+        raise HTTPException(status_code=502, detail="Gemini Vertex request failed") from exc
+
+    if not body.get("stream"):
+        return JSONResponse(completion)
+
+    message = completion["choices"][0]["message"]
+    finish_reason = completion["choices"][0]["finish_reason"]
+    chunk_base = {
+        "id": completion["id"], "object": "chat.completion.chunk",
+        "created": completion["created"], "model": completion["model"],
+    }
+
+    async def event_stream():
+        yield "data: " + json.dumps({**chunk_base, "choices": [{
+            "index": 0, "delta": {"role": "assistant"}, "finish_reason": None
+        }]}) + "\n\n"
+        delta = {}
+        if message.get("content"):
+            delta["content"] = message["content"]
+        if message.get("tool_calls"):
+            delta["tool_calls"] = message["tool_calls"]
+        if delta:
+            yield "data: " + json.dumps({**chunk_base, "choices": [{
+                "index": 0, "delta": delta, "finish_reason": None
+            }]}) + "\n\n"
+        yield "data: " + json.dumps({**chunk_base, "choices": [{
+            "index": 0, "delta": {}, "finish_reason": finish_reason
+        }]}) + "\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Step 1: Lead ingestion (from Meta ad webhook)
 # ═══════════════════════════════════════════════════════════════════
@@ -113,6 +182,10 @@ async def whatsapp_webhook(request: Request, db: AsyncSession = Depends(get_db))
         entry = body.get("entry", [])[0]
         changes = entry.get("changes", [])[0]
         value = changes.get("value", {})
+        if not is_configured_whatsapp_phone_number(value):
+            received_phone_id = value.get("metadata", {}).get("phone_number_id", "") if isinstance(value, dict) else ""
+            logger.warning("Rejected WhatsApp webhook for unconfigured phone_number_id=%s", received_phone_id)
+            raise HTTPException(status_code=403, detail="Unconfigured WhatsApp phone number")
         messages = value.get("messages", [])
         if not messages:
             # Could be a status update (delivered, read, etc.)

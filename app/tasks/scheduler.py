@@ -20,6 +20,60 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
+def amount_confirmed_for_qr(gathered: object) -> float | int | str | None:
+    """Return a safe QR amount from a Dograh workflow run.
+
+    Dograh sometimes persists `proposed_amount` but omits `confirmed_amount`
+    after it has already transitioned through the explicit confirmation node.
+    The Payment QR node is reachable only after that confirmation transition,
+    so it is the durable confirmation signal for this fallback.
+    """
+    if not isinstance(gathered, dict):
+        return None
+    confirmed = gathered.get("confirmed_amount")
+    if confirmed not in (None, ""):
+        return confirmed
+    nodes_visited = gathered.get("nodes_visited", [])
+    if isinstance(nodes_visited, list) and "Payment QR" in nodes_visited:
+        proposed = gathered.get("proposed_amount")
+        if proposed not in (None, ""):
+            return proposed
+    return None
+
+
+def is_media_start_failure(run_logs: object) -> bool:
+    """Return True only when Telnyx reported zero media packets on both legs.
+
+    A normal unanswered call has no quality stats. Zero packet counts on both
+    legs mean the customer answered but Telnyx never started the media stream,
+    so retrying the call once is safe and useful.
+    """
+    if isinstance(run_logs, str):
+        try:
+            import json
+            run_logs = json.loads(run_logs)
+        except (TypeError, ValueError):
+            return False
+    if not isinstance(run_logs, dict):
+        return False
+
+    callbacks = run_logs.get("telephony_status_callbacks", [])
+    if not isinstance(callbacks, list):
+        return False
+    for callback in reversed(callbacks):
+        try:
+            payload = callback["data"]["data"]["payload"]
+            stats = payload.get("call_quality_stats")
+            if not isinstance(stats, dict):
+                continue
+            inbound = int(stats.get("inbound", {}).get("packet_count", -1))
+            outbound = int(stats.get("outbound", {}).get("packet_count", -1))
+            return inbound == 0 and outbound == 0
+        except (KeyError, TypeError, ValueError):
+            continue
+    return False
+
+
 async def check_service_health(db: AsyncSession) -> dict:
     """Check health of all connected services."""
     health = {}
@@ -28,7 +82,7 @@ async def check_service_health(db: AsyncSession) -> dict:
     try:
         import httpx
         async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(f"{settings.DOGRAH_API_URL}/health")
+            resp = await client.get(f"{settings.DOGRAH_API_URL}/api/v1/health")
             health["dograh"] = {"status": "healthy" if resp.status_code == 200 else "unhealthy", "latency_ms": resp.elapsed.total_seconds() * 1000}
     except Exception as e:
         health["dograh"] = {"status": "down", "error": str(e)}
@@ -37,8 +91,11 @@ async def check_service_health(db: AsyncSession) -> dict:
     try:
         import httpx
         async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(f"{settings.WA_API_URL}/", headers={"Authorization": f"Bearer {settings.WA_ACCESS_TOKEN}"})
-            health["whatsapp"] = {"status": "healthy" if resp.status_code in (200, 404) else "unhealthy"}
+            resp = await client.get(
+                f"{settings.WA_API_URL}/{settings.WA_PHONE_NUMBER_ID}?fields=id",
+                headers={"Authorization": f"Bearer {settings.WA_ACCESS_TOKEN}"},
+            )
+            health["whatsapp"] = {"status": "healthy" if resp.status_code == 200 else "unhealthy"}
     except Exception as e:
         health["whatsapp"] = {"status": "down", "error": str(e)}
 
@@ -171,14 +228,16 @@ async def midcall_qr_polling(engine):
                     LeadStatus.AWAITING_PAYMENT,
                     LeadStatus.QR_GENERATED,
                 )
-                recently = datetime.utcnow() - timedelta(minutes=30)
-
+                recent_call_cutoff = datetime.utcnow() - timedelta(minutes=30)
+                # Reconcile every unresolved call log so a restart cannot leave
+                # a lead stuck in CALL_TRIGGERED. Only fresh calls may create a
+                # QR: historical logs are reconciliation-only and must never
+                # send a surprise payment request to an old lead.
                 result = await pdb.execute(
                     select(CallLog).join(Lead, CallLog.lead_id == Lead.id)
                     .where(CallLog.status == "initiated")
                     .where(CallLog.dograh_run_id.isnot(None))
                     .where(Lead.status.in_(active_statuses))
-                    .where(CallLog.created_at > recently)
                 )
                 active_call_logs = list(result.scalars().all())
 
@@ -204,7 +263,7 @@ async def midcall_qr_polling(engine):
                     # Query Dograh workflow_runs table for gathered_context
                     dograh_result = await ddb.execute(
                         sa_text(
-                            "SELECT gathered_context, state FROM workflow_runs "
+                            "SELECT gathered_context, state, logs FROM workflow_runs "
                             "WHERE id = :run_id AND workflow_id = :wf_id"
                         ).bindparams(run_id=run_id, wf_id=settings.DOGRAH_WORKFLOW_ID)
                     )
@@ -215,6 +274,7 @@ async def midcall_qr_polling(engine):
 
                     gathered = row[0] if row[0] else {}
                     run_state = row[1] if len(row) > 1 else ""
+                    run_logs = row[2] if len(row) > 2 else {}
 
                     # Parse gathered_context if it's a string
                     if isinstance(gathered, str):
@@ -228,24 +288,71 @@ async def midcall_qr_polling(engine):
                     if not isinstance(gathered, dict):
                         continue
 
-                    confirmed_amount = gathered.get("confirmed_amount")
+                    confirmed_amount = amount_confirmed_for_qr(gathered)
                     if not confirmed_amount:
                         # Check if run completed/failed — update call_log status
                         if run_state == "completed":
                             call_log.status = "completed"
-                            # Check for call_disposition in gathered_context
                             disposition = gathered.get("call_disposition", "")
-                            if disposition in ("no-answer",):
-                                call_log.status = "no_answer"
-                                lead.status = LeadStatus.CALL_FAILED
-                                lead.updated_at = datetime.utcnow()
-                            elif disposition in ("voicemail",):
-                                call_log.status = "voicemail"
-                                lead.status = LeadStatus.CALL_FAILED
-                                lead.updated_at = datetime.utcnow()
-                            else:
-                                lead.status = LeadStatus.CALL_COMPLETED
-                                lead.updated_at = datetime.utcnow()
+                            # Never move a lead backwards after a QR was sent;
+                            # completion tracking is still needed for the call log.
+                            if lead.status not in (LeadStatus.AWAITING_PAYMENT, LeadStatus.QR_GENERATED):
+                                if disposition in ("no-answer",):
+                                    if is_media_start_failure(run_logs):
+                                        # Telnyx connected the call but never started either
+                                        # audio leg. Retry exactly once; a normal no-answer is
+                                        # deliberately not retried.
+                                        prior_retry = await pdb.execute(
+                                            select(CallLog.id)
+                                            .where(CallLog.lead_id == lead.id)
+                                            .where(CallLog.status == "media_start_failed")
+                                            .limit(1)
+                                        )
+                                        call_log.status = "media_start_failed"
+                                        if prior_retry.scalar_one_or_none() is None:
+                                            try:
+                                                from app.services.dograh_service import DograhService
+                                                await DograhService(pdb).trigger_outbound_call(
+                                                    lead_id=lead.id,
+                                                    phone=lead.phone,
+                                                    name=lead.name or "",
+                                                    custom_context={
+                                                        "auto_retry": "media_start_failure",
+                                                        "retry_of_run_id": run_id,
+                                                    },
+                                                )
+                                                logger.warning(
+                                                    "Media stream failed for run %s; automatically retried once for lead %s",
+                                                    run_id,
+                                                    lead.id,
+                                                )
+                                            except Exception as retry_error:
+                                                lead.status = LeadStatus.CALL_FAILED
+                                                lead.updated_at = datetime.utcnow()
+                                                logger.error(
+                                                    "Automatic media-start retry failed for run %s: %s",
+                                                    run_id,
+                                                    retry_error,
+                                                )
+                                        else:
+                                            lead.status = LeadStatus.CALL_FAILED
+                                            lead.updated_at = datetime.utcnow()
+                                            logger.warning(
+                                                "Media stream failed again for run %s; retry limit reached for lead %s",
+                                                run_id,
+                                                lead.id,
+                                            )
+                                    else:
+                                        call_log.status = "no_answer"
+                                        lead.status = LeadStatus.CALL_FAILED
+                                        lead.updated_at = datetime.utcnow()
+                                elif disposition in ("voicemail",):
+                                    call_log.status = "voicemail"
+                                    lead.status = LeadStatus.CALL_FAILED
+                                    lead.updated_at = datetime.utcnow()
+                                else:
+                                    lead.status = LeadStatus.CALL_COMPLETED
+                                    lead.updated_at = datetime.utcnow()
                             await pdb.commit()
                             logger.info(f"Mid-call poller: run {run_id} completed (no amount) — lead={lead.id}, disposition={disposition}")
                         elif run_state == "failed":
@@ -262,6 +369,13 @@ async def midcall_qr_polling(engine):
                     # Dograh states: initialized, running, completed, failed, etc.
                     if run_state in ("failed",):
                         logger.info(f"Mid-call poller: run {run_id} failed — skipping")
+                        continue
+
+                    if call_log.created_at <= recent_call_cutoff:
+                        if run_state == "completed" and call_log.status == "initiated":
+                            call_log.status = "completed"
+                            await pdb.commit()
+                            logger.info(f"Mid-call poller: reconciled historical run {run_id} without QR")
                         continue
 
                     try:

@@ -23,7 +23,13 @@ class Settings(BaseSettings):
     DOGRAH_WORKFLOW_ID: int = 1
     # Dograh's own postgres (for mid-call polling of gathered_context)
     DOGRAH_DATABASE_URL: str = "postgresql+asyncpg://dograh:dograh_pg@dograh-postgres:5432/dograh"
-    MIDCALL_POLL_INTERVAL_SECONDS: int = 8
+    MIDCALL_POLL_INTERVAL_SECONDS: int = 1
+
+    # Gemini Vertex API-key bridge (internal Dograh LLM route)
+    GEMINI_VERTEX_API_KEY: str = ""
+    GEMINI_VERTEX_PROJECT_ID: str = ""
+    GEMINI_VERTEX_LOCATION: str = "us-central1"
+    GEMINI_VERTEX_PROXY_TOKEN: str = ""
 
     # WhatsApp
     WA_API_URL: str = "https://graph.facebook.com/v21.0"

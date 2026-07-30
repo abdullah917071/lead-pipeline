@@ -66,8 +66,7 @@ class PipelineOrchestrator:
         if not lead:
             return None
         if lead.status not in (LeadStatus.WA_SENT, LeadStatus.PENDING_WA_OPTIN,
-                                 LeadStatus.CALL_FAILED, LeadStatus.CALL_TRIGGERED,
-                                 LeadStatus.WA_REPLIED):
+                                 LeadStatus.CALL_FAILED, LeadStatus.WA_REPLIED):
             return lead
 
         intent = self._classify_intent(message_text)

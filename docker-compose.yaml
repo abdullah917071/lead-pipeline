@@ -72,7 +72,10 @@ services:
   # Run `./setup_dograh.sh` first to generate the config.
   # ═══════════════════════════════════════════════════════════════════
   dograh:
-    image: ghcr.io/dograh-hq/dograh-api:latest
+    build:
+      context: .
+      dockerfile: deploy/Dograh.Dockerfile
+    image: lead-pipeline-dograh
     container_name: lp-dograh-api
     env_file: .env.dograh
     ports:

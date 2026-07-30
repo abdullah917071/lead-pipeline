@@ -40,9 +40,20 @@ class LeadService:
         """Ingest a new lead. Dedup by phone number."""
         norm = normalize_phone(data.phone)
         existing = await self.db.execute(
-            select(Lead).where(Lead.phone == norm)
+            select(Lead).where(Lead.phone == norm).order_by(Lead.updated_at.desc())
         )
-        lead = existing.scalar_one_or_none()
+        matches = list(existing.scalars().all())
+        # Historical test/re-engagement rows can predate the dedupe fix. Prefer
+        # a recoverable lead so a terminal duplicate cannot suppress a valid reply.
+        active = [lead for lead in matches if lead.status not in (
+            LeadStatus.COMPLETED, LeadStatus.CALL_COMPLETED, LeadStatus.COLD, LeadStatus.REJECTED,
+        )]
+        lead = active[0] if active else (matches[0] if matches else None)
+        if len(matches) > 1:
+            logger.warning(
+                f"Multiple leads found for phone {norm}; "
+                f"using {'active' if active else 'most recent'} lead {lead.id if lead else 'none'}"
+            )
         if lead:
             if lead.status == LeadStatus.COMPLETED:
                 logger.info(f"Lead {data.phone} already converted - skipping")
@@ -96,9 +107,16 @@ class LeadService:
         leads = list(result.scalars().all())
         if not leads:
             return None
+        active = [lead for lead in leads if lead.status not in (
+            LeadStatus.COMPLETED, LeadStatus.CALL_COMPLETED, LeadStatus.COLD, LeadStatus.REJECTED,
+        )]
+        lead = active[0] if active else leads[0]
         if len(leads) > 1:
-            logger.warning(f"Multiple leads found for phone {norm} — returning most recent")
-        return leads[0]
+            logger.warning(
+                f"Multiple leads found for phone {norm}; "
+                f"returning {'active' if active else 'most recent'} lead {lead.id}"
+            )
+        return lead
 
     async def get_pending_sessions(self) -> List[PaymentSession]:
         now = datetime.utcnow()
