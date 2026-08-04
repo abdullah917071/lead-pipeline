@@ -74,6 +74,18 @@ def is_media_start_failure(run_logs: object) -> bool:
     return False
 
 
+def should_retry_media_start_failure(
+    disposition: object, run_logs: object, lead_status: LeadStatus
+) -> bool:
+    """Retry one zero-media Telnyx failure, regardless of QR/payment state.
+
+    A prior QR belongs to an earlier call and must not suppress recovery of a
+    newly answered-but-silent call. The caller may still need voice assistance.
+    """
+    del lead_status  # Intentionally state-independent; retry is transport recovery.
+    return disposition == "no-answer" and is_media_start_failure(run_logs)
+
+
 async def check_service_health(db: AsyncSession) -> dict:
     """Check health of all connected services."""
     health = {}
@@ -296,7 +308,12 @@ async def midcall_qr_polling(engine):
                             disposition = gathered.get("call_disposition", "")
                             # Never move a lead backwards after a QR was sent;
                             # completion tracking is still needed for the call log.
-                            if lead.status not in (LeadStatus.AWAITING_PAYMENT, LeadStatus.QR_GENERATED):
+                            if (
+                                lead.status not in (LeadStatus.AWAITING_PAYMENT, LeadStatus.QR_GENERATED)
+                                or should_retry_media_start_failure(
+                                    disposition, run_logs, lead.status
+                                )
+                            ):
                                 if disposition in ("no-answer",):
                                     if is_media_start_failure(run_logs):
                                         # Telnyx connected the call but never started either

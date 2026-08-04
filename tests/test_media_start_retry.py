@@ -1,6 +1,7 @@
 import unittest
 
-from app.tasks.scheduler import is_media_start_failure
+from app.models.database import LeadStatus
+from app.tasks.scheduler import is_media_start_failure, should_retry_media_start_failure
 
 
 class MediaStartFailureTests(unittest.TestCase):
@@ -26,6 +27,31 @@ class MediaStartFailureTests(unittest.TestCase):
         }
 
         self.assertTrue(is_media_start_failure(logs))
+
+    def test_retries_media_start_failure_even_when_lead_already_has_a_qr(self):
+        logs = {
+            "telephony_status_callbacks": [
+                {
+                    "status": "no-answer",
+                    "data": {
+                        "data": {
+                            "payload": {
+                                "call_quality_stats": {
+                                    "inbound": {"packet_count": "0"},
+                                    "outbound": {"packet_count": "0"},
+                                }
+                            }
+                        }
+                    },
+                }
+            ]
+        }
+
+        self.assertTrue(
+            should_retry_media_start_failure(
+                "no-answer", logs, LeadStatus.AWAITING_PAYMENT
+            )
+        )
 
     def test_does_not_retry_a_normal_no_answer_without_media_stats(self):
         logs = {
