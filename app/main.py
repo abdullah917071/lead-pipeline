@@ -47,6 +47,32 @@ def is_configured_whatsapp_phone_number(value: object) -> bool:
     return bool(expected_phone_id) and received_phone_id == expected_phone_id
 
 
+def extract_whatsapp_statuses(value: object) -> list[dict[str, object]]:
+    """Return safe, useful fields from Meta asynchronous delivery callbacks."""
+    if not isinstance(value, dict):
+        return []
+    statuses = value.get("statuses", [])
+    if not isinstance(statuses, list):
+        return []
+
+    result = []
+    for update in statuses:
+        if not isinstance(update, dict):
+            continue
+        errors = update.get("errors", [])
+        error_codes = [
+            error.get("code") for error in errors
+            if isinstance(error, dict) and error.get("code") is not None
+        ] if isinstance(errors, list) else []
+        result.append({
+            "message_id": update.get("id", ""),
+            "status": update.get("status", ""),
+            "recipient_id": update.get("recipient_id", ""),
+            "error_codes": error_codes,
+        })
+    return result
+
+
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=settings.DEBUG,
@@ -188,8 +214,11 @@ async def whatsapp_webhook(request: Request, db: AsyncSession = Depends(get_db))
             raise HTTPException(status_code=403, detail="Unconfigured WhatsApp phone number")
         messages = value.get("messages", [])
         if not messages:
-            # Could be a status update (delivered, read, etc.)
-            return {"status": "ok", "info": "no message"}
+            # Meta sends asynchronous sent/delivered/read/failed updates here.
+            status_updates = extract_whatsapp_statuses(value)
+            if status_updates:
+                logger.info("WA delivery status: %s", status_updates)
+            return {"status": "ok", "status_updates": status_updates}
 
         msg = messages[0]
         phone = msg.get("from", "")
