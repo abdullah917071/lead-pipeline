@@ -9,6 +9,7 @@ All payment references are Razorpay QR only — no UPI/transfer options.
 """
 
 import logging
+from pathlib import Path
 import httpx
 from typing import Optional, List, Dict
 
@@ -27,6 +28,26 @@ class WhatsAppService:
         }
 
     # ─── Template messages ────────────────────────────────────────
+
+    async def upload_image(self, image_path: Path) -> str:
+        """Upload a template-header image to Meta and return its media ID.
+
+        Using a Meta-hosted media ID avoids relying on an external image URL
+        during template delivery.
+        """
+        if not image_path.is_file():
+            raise RuntimeError(f"WhatsApp header image is missing: {image_path}")
+        media_url = f"{settings.WA_API_URL}/{settings.WA_PHONE_NUMBER_ID}/media"
+        with image_path.open("rb") as image_file:
+            files = {"file": (image_path.name, image_file, "image/jpeg")}
+            data = {"messaging_product": "whatsapp"}
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(media_url, data=data, files=files, headers={"Authorization": self.headers["Authorization"]})
+                resp.raise_for_status()
+                media_id = resp.json().get("id")
+        if not media_id:
+            raise RuntimeError("Meta did not return an image media ID")
+        return str(media_id)
 
     async def send_template(self, to_phone: str, template_name: str,
                             variables: Optional[Dict] = None, language: str = "en") -> dict:
@@ -50,10 +71,12 @@ class WhatsAppService:
     async def send_template_with_image(self, to_phone: str, template_name: str,
                                         image_url: str, variables: Optional[Dict] = None,
                                         language: str = "en") -> dict:
+        image = ({"id": image_url.removeprefix("media_id:")}
+                 if image_url.startswith("media_id:") else {"link": image_url})
         components = []
         components.append({
             "type": "header",
-            "parameters": [{"type": "image", "image": {"link": image_url}}]
+            "parameters": [{"type": "image", "image": image}]
         })
         if variables:
             params = [{"type": "text", "text": v} for v in variables.values()]
@@ -122,12 +145,14 @@ class WhatsAppService:
 
     async def send_optin_message(self, phone: str, name: str) -> dict:
         """Send the approved image-header template required for first contact."""
-        if not settings.WA_OPTIN_TEMPLATE_NAME or not settings.WA_OPTIN_IMAGE_URL:
-            raise RuntimeError("WhatsApp opt-in template name and image URL must be configured")
+        if not settings.WA_OPTIN_TEMPLATE_NAME:
+            raise RuntimeError("WhatsApp opt-in template name must be configured")
+        header_image = Path(__file__).resolve().parent.parent / "assets" / "optin-header.jpg"
+        media_id = await self.upload_image(header_image)
         return await self.send_template_with_image(
             phone,
             settings.WA_OPTIN_TEMPLATE_NAME,
-            settings.WA_OPTIN_IMAGE_URL,
+            f"media_id:{media_id}",
             {"name": name or "there"},
         )
 

@@ -38,7 +38,10 @@ from pipecat.frames.frames import (
 from pipecat.audio.resamplers.soxr_resampler import SOXRAudioResampler
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection
-from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService
+from pipecat.services.google.gemini_live.llm import (
+    GeminiLiveLLMService,
+    GeminiVADParams,
+)
 from pipecat.services.llm_service import FunctionCallFromLLM
 from pipecat.utils.tracing.service_decorators import traced_gemini_live
 
@@ -59,6 +62,13 @@ class DograhGeminiLiveLLMService(GeminiLiveLLMService):
     adapter_class = DograhGeminiJSONSchemaAdapter
 
     def __init__(self, **kwargs):
+        # Telnyx delivers 8 kHz PSTN audio. Gemini's server VAD can leave this
+        # stream open indefinitely, so local Silero VAD explicitly starts and
+        # ends each Gemini input activity window. Keep an explicitly supplied
+        # VAD configuration intact for non-telephony callers.
+        settings = kwargs.get("settings")
+        if settings is not None and not getattr(settings, "vad", None):
+            settings.vad = GeminiVADParams(disabled=True)
         super().__init__(**kwargs)
         # User-mute state, driven by broadcast UserMute{Started,Stopped}Frames.
         # Audio is not forwarded to Gemini while muted.
@@ -79,6 +89,11 @@ class DograhGeminiLiveLLMService(GeminiLiveLLMService):
         self._awaiting_node_transition_context: bool = False
         self._node_transition_context_received: bool = False
         self._node_transition_context_seed_started: bool = False
+        # Gemini can occasionally emit a transition tool call while producing
+        # the static greeting, before any caller media has arrived. Treat that
+        # as an invalid model response: no workflow decision is valid until the
+        # caller has actually started speaking.
+        self._caller_has_spoken: bool = False
 
     # ------------------------------------------------------------------
     # Hooks from upstream GeminiLiveLLMService
@@ -121,6 +136,15 @@ class DograhGeminiLiveLLMService(GeminiLiveLLMService):
     async def _run_or_defer_function_calls(
         self, function_calls_llm: list[FunctionCallFromLLM]
     ):
+        if (
+            self._contains_node_transition(function_calls_llm)
+            and not self._may_execute_node_transition()
+        ):
+            logger.error(
+                f"{self}: rejecting unsolicited node-transition tool call "
+                "before caller speech; keeping the workflow on its current node"
+            )
+            return
         if not self._contains_node_transition(function_calls_llm):
             await super()._run_or_defer_function_calls(function_calls_llm)
             return
@@ -148,6 +172,19 @@ class DograhGeminiLiveLLMService(GeminiLiveLLMService):
 
     def _is_node_transition(self, function_call: FunctionCallFromLLM) -> bool:
         return self._function_is_node_transition(function_call.function_name)
+
+    def _may_execute_node_transition(self) -> bool:
+        """Only accept an LLM workflow decision after caller speech begins."""
+        return self._caller_has_spoken
+
+    async def _handle_msg_input_transcription(self, message):
+        """Unlock workflow decisions when Gemini has transcribed caller speech."""
+        transcription = getattr(
+            getattr(message, "server_content", None), "input_transcription", None
+        )
+        if getattr(transcription, "text", "").strip():
+            self._caller_has_spoken = True
+        await super()._handle_msg_input_transcription(message)
 
     def _schedule_node_transition_function_calls(
         self, function_calls_llm: list[FunctionCallFromLLM]

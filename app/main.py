@@ -203,7 +203,14 @@ async def whatsapp_webhook(request: Request, db: AsyncSession = Depends(get_db))
     - Amount reply (after call) -> generate QR
     - Free text -> classify intent
     """
-    body = await request.json()
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        logger.warning("Rejected malformed WhatsApp webhook JSON")
+        raise HTTPException(status_code=400, detail="Malformed JSON payload")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Webhook payload must be a JSON object")
+
     try:
         entry = body.get("entry", [])[0]
         changes = entry.get("changes", [])[0]

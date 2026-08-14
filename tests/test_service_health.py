@@ -37,6 +37,7 @@ class ServiceHealthTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(health["dograh"]["status"], "healthy")
         self.assertTrue(any(url.endswith("/api/v1/health") for url in _Client.requested_urls))
+        self.assertTrue(any(url.endswith("/api/v1/organizations/telephony-configs") for url in _Client.requested_urls))
 
     async def test_whatsapp_health_checks_the_configured_phone_number_resource(self):
         _Client.requested_urls = []

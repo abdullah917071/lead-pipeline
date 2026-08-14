@@ -1,7 +1,7 @@
 """Dograh Voice AI Service - triggers outbound calls and processes call webhooks.
 
-Uses Dograh's public trigger endpoint:
-  POST /api/v1/public/agent/{trigger_path}
+Uses Dograh's workflow-UUID trigger endpoint:
+  POST /api/v1/public/agent/workflow/{workflow_uuid}
   Headers: X-API-Key: {DOGRAH_API_KEY}
   Body: {"phone_number": "+91...", "initial_context": {...}, "telephony_configuration_id": N}
 
@@ -65,7 +65,7 @@ class DograhService:
             "Content-Type": "application/json",
         }
 
-        url = f"{self.base_url}/api/v1/public/agent/{self.trigger_path}"
+        url = f"{self.base_url}/api/v1/public/agent/workflow/{self.trigger_path}"
 
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(url, json=payload, headers=headers)

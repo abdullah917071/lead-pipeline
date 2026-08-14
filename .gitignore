@@ -2,6 +2,9 @@
 .env
 .env.prod
 .env.dograh
+.dograh-bootstrap.json
+secrets/
+backups/
 *.key
 
 # Python

@@ -90,12 +90,28 @@ async def check_service_health(db: AsyncSession) -> dict:
     """Check health of all connected services."""
     health = {}
 
-    # Check Dograh
+    # Dograh is usable only when both the API is reachable and this deployment's
+    # API key is accepted. A bare /health response is insufficient: a freshly
+    # initialized Dograh database has no org, workflow, or telephony config.
     try:
         import httpx
         async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(f"{settings.DOGRAH_API_URL}/api/v1/health")
-            health["dograh"] = {"status": "healthy" if resp.status_code == 200 else "unhealthy", "latency_ms": resp.elapsed.total_seconds() * 1000}
+            api_health = await client.get(f"{settings.DOGRAH_API_URL}/api/v1/health")
+            config_check = await client.get(
+                f"{settings.DOGRAH_API_URL}/api/v1/organizations/telephony-configs",
+                headers={"X-API-Key": settings.DOGRAH_API_KEY},
+            )
+            if api_health.status_code == 200 and config_check.status_code == 200:
+                health["dograh"] = {
+                    "status": "healthy",
+                    "latency_ms": api_health.elapsed.total_seconds() * 1000,
+                }
+            else:
+                health["dograh"] = {
+                    "status": "unhealthy",
+                    "health_http_status": api_health.status_code,
+                    "configuration_http_status": config_check.status_code,
+                }
     except Exception as e:
         health["dograh"] = {"status": "down", "error": str(e)}
 
